@@ -229,11 +229,26 @@ def get_workout_hr_trace(session: Session, workout_id: str) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 # Metryki, których dzienna wartość to SUMA wierszy danego dnia (kursowe).
-SUM_DAILY_METRICS = {"step_count"}
+# active_energy / basal_energy_burned to kcal(kJ) narastająco w ciągu dnia -> suma.
+# apple_exercise_time / apple_stand_time / apple_stand_hour to minuty/godziny -> suma.
+# cycling_distance / walking_running_distance / flights_climbed to dystansy/liczniki -> suma.
+SUM_DAILY_METRICS = {
+    "step_count",
+    "active_energy",
+    "basal_energy_burned",
+    "apple_exercise_time",
+    "apple_stand_time",
+    "apple_stand_hour",
+    "cycling_distance",
+    "walking_running_distance",
+    "flights_climbed",
+}
 # Metryki, których dzienna wartość to MEDIANA próbek (np. wiele pomiarów HRV dziennie).
 MEDIAN_DAILY_METRICS = {"heart_rate_variability"}
 # Metryki, których dzienna wartość to OSTATNI/pojedynczy pomiar danego dnia.
-LAST_DAILY_METRICS = {"resting_heart_rate", "respiratory_rate", "apple_sleeping_wrist_temperature"}
+LAST_DAILY_METRICS = {"resting_heart_rate", "respiratory_rate", "apple_sleeping_wrist_temperature",
+                      "weight_body_mass", "body_fat_percentage", "lean_body_mass",
+                      "body_mass_index", "height"}
 
 
 def _agg_daily(values: list[float], metric: str) -> Optional[float]:
@@ -270,7 +285,11 @@ def get_daily_activity(day) -> dict:
     try:
         out: dict = {"date": day.strftime("%Y-%m-%d")}
         order = ["step_count", "walking_running_distance", "active_energy",
-                 "basal_energy_burned", "resting_heart_rate", "heart_rate_variability"]
+                 "basal_energy_burned", "resting_heart_rate", "heart_rate_variability",
+                 "apple_exercise_time", "apple_stand_time", "apple_stand_hour",
+                 "cycling_distance", "flights_climbed", "physical_effort",
+                 "weight_body_mass", "body_fat_percentage", "lean_body_mass",
+                 "body_mass_index", "height"]
         for metric in order:
             rows = _metric_points_for_date(db, metric, day)
             vals = [r.qty for r in rows if r.qty is not None]
