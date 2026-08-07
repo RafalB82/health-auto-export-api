@@ -49,6 +49,23 @@ powtórny sync usuwa stare punkty HR/trasy i wstawia świeże.
 Sprawdzone empirycznie: dwukrotny import tego samego pliku daje identyczną
 liczbę wierszy w każdej tabeli.
 
+## Agregacja minutowa (heart_rate)
+
+`heart_rate` jest wpisany w `HIGH_GRANULARITY_METRICS` w `app/ingest.py` —
+zamiast insertować każdy surowy punkt, dane grupowane są do 1 wiersza/minutę
+(`avg`/`min`/`max`/`sample_count`) zarówno w `metric_points_agg`, jak i w
+`workout_heart_rate` (osobno dla `kind="active"` i `kind="recovery"`).
+
+Na testowym pliku: 1097 surowych punktów HR z treningu (próbkowanie co ~5s)
+zredukowane do 92 wierszy (1 wiersz/minutę) — ok. 12x mniej rekordów, bez
+utraty żadnej informacji przydatnej do analizy treningu/regeneracji (avg do
+wykresu, min/max do wychwycenia skoków). Surowe punkty nadal są dostępne w
+`raw_payloads`, gdyby kiedyś potrzebna była wyższa rozdzielczość.
+
+Żeby dodać kolejną metrykę do agregacji (np. jeśli zaczniesz eksportować
+`blood_oxygen_saturation` z podobną granularnością), dopisz jej nazwę do
+zbioru `HIGH_GRANULARITY_METRICS` w `app/ingest.py` — bez zmian w reszcie kodu.
+
 ## Duże payloady (GPS, długie okresy)
 
 Testowy plik (jeden dzień + jeden 88-minutowy trening rowerowy) miał

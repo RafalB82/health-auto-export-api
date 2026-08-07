@@ -6,9 +6,16 @@ POST z tym samym (metric_name, date, source) robi UPDATE zamiast duplikować -
 istotne przy Date Range "Since Last Sync", gdzie zdarzają się nakładające okna.
 Workouty są kluczowane po natywnym UUID z Apple Health (id), więc powtórka
 usuwa stare punkty HR/route i wstawia świeże (patrz upsert_workout).
+
+Agregacja minutowa: metryki z HIGH_GRANULARITY_METRICS (domyślnie heart_rate)
+są redukowane do 1 wiersza/minutę (avg/min/max/count) zamiast insertu per
+surowy punkt. Przy próbkowaniu HR co 1-5s to redukcja rzędu 10-60x rozmiaru
+tabeli/insertów, bez utraty danych źródłowych - pełny surowy JSON zawsze
+ląduje w raw_payloads.
 """
 from __future__ import annotations
 
+from collections import defaultdict
 from datetime import datetime
 from typing import Optional
 
@@ -18,12 +25,21 @@ from sqlalchemy.orm import Session
 from app.schemas import HealthExportPayload, WorkoutEntry
 from app import db as models
 
+# Metryki, dla których punkty grupujemy do 1 wiersza/minutę zamiast zapisywać
+# każdy surowy punkt osobno. Dopisz kolejne nazwy (np. "blood_oxygen_saturation"),
+# jeśli apka zacznie je eksportować z podobną granularnością.
+HIGH_GRANULARITY_METRICS = {"heart_rate"}
+
 
 def parse_dt(value: Optional[str]) -> Optional[datetime]:
     """Health Auto Export daje daty jako '2026-08-06 00:00:00 +0200'."""
     if not value:
         return None
     return dtparser.parse(value)
+
+
+def floor_to_minute(dt: datetime) -> datetime:
+    return dt.replace(second=0, microsecond=0)
 
 
 def upsert_metric_point(session: Session, metric_name: str, units: Optional[str],
@@ -76,6 +92,55 @@ def upsert_metric_point(session: Session, metric_name: str, units: Optional[str]
     # W produkcji warto to logować do osobnej tabeli "unparsed_points".
 
 
+def upsert_metric_minute_bucket(session: Session, metric_name: str, units: Optional[str],
+                                 source: Optional[str], minute: datetime,
+                                 values: list[float], session_id: Optional[str]) -> None:
+    """Zapisuje jeden zagregowany wiersz (avg/min/max/count) dla minuty do MetricPointAgg."""
+    existing = (
+        session.query(models.MetricPointAgg)
+        .filter_by(metric_name=metric_name, date=minute, source=source)
+        .one_or_none()
+    )
+    if existing is None:
+        existing = models.MetricPointAgg(
+            metric_name=metric_name, date=minute, source=source
+        )
+        session.add(existing)
+    existing.units = units
+    existing.avg = sum(values) / len(values)
+    existing.min = min(values)
+    existing.max = max(values)
+    existing.sample_count = len(values)
+    existing.session_id = session_id
+
+
+def ingest_metric_high_granularity(session: Session, metric_name: str, units: Optional[str],
+                                    points: list[dict], session_id: Optional[str]) -> int:
+    """Grupuje surowe punkty {qty|Avg, date, source} do 1 wiersza/minutę/source.
+
+    Obsługuje oba warianty wejściowe (qty oraz Avg z ewentualnym Summarize ON w apce) -
+    w obu przypadkach liczbą reprezentatywną do agregacji jest wartość Avg/qty.
+    Zwraca liczbę zapisanych (zagregowanych) wierszy.
+    """
+    buckets: dict[tuple[Optional[str], datetime], list[float]] = defaultdict(list)
+
+    for point in points:
+        date = parse_dt(point.get("date"))
+        if date is None:
+            continue
+        value = point.get("qty", point.get("Avg"))
+        if value is None:
+            continue
+        source = point.get("source") or None
+        minute = floor_to_minute(date)
+        buckets[(source, minute)].append(float(value))
+
+    for (source, minute), values in buckets.items():
+        upsert_metric_minute_bucket(session, metric_name, units, source, minute, values, session_id)
+
+    return len(buckets)
+
+
 def upsert_sleep_point(session: Session, point: dict, session_id: Optional[str]) -> None:
     date = parse_dt(point.get("date"))
     sleep_start = parse_dt(point.get("sleepStart"))
@@ -103,6 +168,39 @@ def upsert_sleep_point(session: Session, point: dict, session_id: Optional[str])
     existing.deep = point.get("deep")
     existing.rem = point.get("rem")
     existing.session_id = session_id
+
+
+def ingest_workout_heart_rate_bucketed(session: Session, workout_id: str,
+                                        points: list[dict], kind: str) -> int:
+    """Agreguje HR treningowy (1097 punktów/88min w typowej jeździe) do 1 wiersza/minutę.
+    kind="active" lub "recovery" - osobne kubełki, bo to różne fazy pomiaru."""
+    buckets: dict[datetime, list[float]] = defaultdict(list)
+    units_seen: Optional[str] = None
+
+    for point in points:
+        ts = parse_dt(point.get("date"))
+        if ts is None or "qty" not in point:
+            continue
+        minute = floor_to_minute(ts)
+        buckets[minute].append(float(point["qty"]))
+        units_seen = point.get("units") or units_seen
+
+    for minute, values in buckets.items():
+        existing = (
+            session.query(models.WorkoutHeartRate)
+            .filter_by(workout_id=workout_id, date=minute, kind=kind)
+            .one_or_none()
+        )
+        if existing is None:
+            existing = models.WorkoutHeartRate(workout_id=workout_id, date=minute, kind=kind)
+            session.add(existing)
+        existing.qty = sum(values) / len(values)
+        existing.min_qty = min(values)
+        existing.max_qty = max(values)
+        existing.sample_count = len(values)
+        existing.units = units_seen
+
+    return len(buckets)
 
 
 def upsert_workout(session: Session, w: WorkoutEntry, session_id: Optional[str]) -> None:
@@ -146,23 +244,8 @@ def upsert_workout(session: Session, w: WorkoutEntry, session_id: Optional[str])
 
     session.flush()  # potrzebne żeby workout_id istniał przed insertami dzieci
 
-    for point in w.heartRateData:
-        ts = parse_dt(point.get("date"))
-        if ts is None or "qty" not in point:
-            continue
-        session.add(models.WorkoutHeartRate(
-            workout_id=w.id, date=ts, qty=point["qty"],
-            units=point.get("units"), kind="active",
-        ))
-
-    for point in w.heartRateRecovery:
-        ts = parse_dt(point.get("date"))
-        if ts is None or "qty" not in point:
-            continue
-        session.add(models.WorkoutHeartRate(
-            workout_id=w.id, date=ts, qty=point["qty"],
-            units=point.get("units"), kind="recovery",
-        ))
+    ingest_workout_heart_rate_bucketed(session, w.id, w.heartRateData, kind="active")
+    ingest_workout_heart_rate_bucketed(session, w.id, w.heartRateRecovery, kind="recovery")
 
     for point in w.route:
         ts = parse_dt(point.get("timestamp"))
@@ -181,9 +264,14 @@ def ingest_payload(session: Session, payload: HealthExportPayload,
 
     for metric in payload.data.metrics:
         counts["metrics"] += 1
-        for point in metric.data:
-            upsert_metric_point(session, metric.name, metric.units, point, session_id)
-            counts["metric_points"] += 1
+        if metric.name in HIGH_GRANULARITY_METRICS:
+            counts["metric_points"] += ingest_metric_high_granularity(
+                session, metric.name, metric.units, metric.data, session_id
+            )
+        else:
+            for point in metric.data:
+                upsert_metric_point(session, metric.name, metric.units, point, session_id)
+                counts["metric_points"] += 1
 
     for workout in payload.data.workouts:
         upsert_workout(session, workout, session_id)

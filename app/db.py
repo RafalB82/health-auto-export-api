@@ -89,6 +89,7 @@ class MetricPointAgg(Base):
     avg = Column(Float, nullable=True)
     min = Column(Float, nullable=True)
     max = Column(Float, nullable=True)
+    sample_count = Column(Integer, nullable=True)  # ile surowych próbek zagregowano do tego wiersza
     session_id = Column(String, nullable=True)
 
 
@@ -161,6 +162,7 @@ class WorkoutHeartRate(Base):
     """Szereg czasowy HR w trakcie treningu (heartRateData / heartRateRecovery)."""
     __tablename__ = "workout_heart_rate"
     __table_args__ = (
+        UniqueConstraint("workout_id", "date", "kind", name="uq_workout_hr_minute"),
         Index("ix_workout_hr_workout_date", "workout_id", "date"),
     )
 
@@ -168,6 +170,9 @@ class WorkoutHeartRate(Base):
     workout_id = Column(String, ForeignKey("workouts.id"), nullable=False)
     date = Column(DateTime, nullable=False)
     qty = Column(Float, nullable=False)
+    min_qty = Column(Float, nullable=True)
+    max_qty = Column(Float, nullable=True)
+    sample_count = Column(Integer, nullable=True)  # ile surowych próbek zagregowano do tej minuty
     units = Column(String, nullable=True)
     kind = Column(String, nullable=False, default="active")  # "active" lub "recovery"
 
