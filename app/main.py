@@ -98,6 +98,57 @@ def verify_api_key(x_api_key: Optional[str] = Header(default=None)) -> None:
         raise HTTPException(status_code=401, detail="Nieprawidłowy lub brakujący X-API-Key")
 
 
+@app.get("/")
+def root() -> dict:
+    """Szybki test żywotności + czy klucz API został ustawiony (bez ujawniania go)."""
+    return {
+        "status": "ok",
+        "service": "health-auto-export-api",
+        "api_key_set": API_KEY != "change-me",
+        "raw_payload_cleanup_days": CLEANUP_INTERVAL_DAYS,
+    }
+
+
+@app.post("/health-data/test")
+async def test_health_data(
+    request: Request,
+    _: None = Depends(verify_api_key),
+) -> dict:
+    """Walidacja przykładowego payloadu BEZ zapisu do bazy.
+
+    Pozwala sprawdzić ręcznie (curl / skrypt), czy serwer przyjąłby dany JSON
+    i co by z nim zrobił — bez dotykania raw_payloads ani pozostałych tabel.
+    Używa tego samego schematu Pydantic co produkcyjny /health-data.
+    """
+    raw_body = await request.body()
+
+    if not raw_body:
+        return {"valid": False, "error": "Puste body", "metrics": 0, "workouts": 0}
+
+    try:
+        raw_json = json.loads(raw_body)
+    except json.JSONDecodeError as e:
+        return {"valid": False, "error": f"Niepoprawny JSON: {e}", "metrics": 0, "workouts": 0}
+
+    try:
+        payload = HealthExportPayload.model_validate(raw_json)
+    except ValidationError as e:
+        return {
+            "valid": False,
+            "error": "Błąd walidacji schematu",
+            "details": e.errors(),
+            "metrics": 0,
+            "workouts": 0,
+        }
+
+    return {
+        "valid": True,
+        "metrics": len(payload.data.metrics),
+        "workouts": len(payload.data.workouts),
+        "metric_points": sum(len(m.data) for m in payload.data.metrics),
+    }
+
+
 @app.get("/health")
 def healthcheck() -> dict:
     return {"status": "ok"}
