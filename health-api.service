@@ -1,0 +1,20 @@
+[Unit]
+Description=Health Auto Export REST API webhook (FastAPI -> SQLite)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/rafal/health-auto-export-api
+# Klucz API czytany z .env obok projektu przez app/main.py (_load_api_key)
+ExecStart=/home/rafal/health-auto-export-api/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8001
+Restart=always
+RestartSec=5
+TimeoutStopSec=20
+
+# Podstawowy sandbox
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target

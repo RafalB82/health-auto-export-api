@@ -15,6 +15,45 @@ uvicorn app.main:app --host 0.0.0.0 --port 8001
 
 Baza SQLite (`health_data.db`) tworzy się automatycznie przy starcie w bieżącym katalogu.
 
+### Uruchomienie jako systemd service (zalecane w produkcji)
+
+Zamiast zwykłego `nohup` (który nie przeżywa restartów ani awarii), webhook można
+uruchomić jako **user service** — autostart przy boot, automatyczny restart przy
+awarii lub zawieszeniu (np. cykliczny event loop z wysokim CPU).
+
+```bash
+cp health-api.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now health-api.service
+# sprawdzenie
+systemctl --user status health-api.service
+```
+
+Działa w tle bez zalogowania dzięki `Linger=yes` dla użytkownika (`loginctl enable-linger rafal`).
+Plik `health-api.service`:
+
+```ini
+[Unit]
+Description=Health Auto Export REST API webhook (FastAPI -> SQLite)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/rafal/health-auto-export-api
+ExecStart=/home/rafal/health-auto-export-api/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8001
+Restart=always
+RestartSec=5
+TimeoutStopSec=20
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target
+```
+
+Klucz API czytany jest z `.env` (patrz niżej), więc nie trzeba przekazywać go w `ExecStart`.
+
 ### Klucz API
 
 Klucz czytany jest w kolejności: zmienna env `HEALTH_API_KEY` → plik `.env` (obok projektu) → domyślny `change-me`. Wartość w `.env` może być podana jako base64 (żeby nie konfliktować z maskowaniem sekretów w shellu):
