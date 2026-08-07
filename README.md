@@ -37,6 +37,8 @@ Automations -> New Automation -> REST API:
 | `sleep_sessions` | `sleep_analysis` — osobny kształt (fazy snu: core/deep/rem/awake) |
 | `workouts` | Nagłówek treningu — dystans, prędkość, HR avg/max, kalorie, itd. |
 | `workout_heart_rate` | Szereg czasowy HR w trakcie treningu (`kind`: active/recovery) |
+| `workout_energy` | Seria `activeEnergy` treningu — 1 wiersz/minutę (kJ) |
+| `workout_steps` | Seria `stepCount` treningu — 1 wiersz/minutę |
 | `workout_route` | Punkty GPS trasy (lat/lon/altitude/timestamp) |
 
 ## Idempotencja

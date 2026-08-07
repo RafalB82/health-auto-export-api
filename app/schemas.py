@@ -95,14 +95,14 @@ class WorkoutEntry(BaseModel):
     end: Optional[str] = None
     duration: Optional[float] = None
 
-    activeEnergy: Optional[WorkoutQtyUnit] = None
+    activeEnergy: Optional[list] = None
     totalEnergy: Optional[WorkoutQtyUnit] = None
     distance: Optional[WorkoutQtyUnit] = None
     avgSpeed: Optional[WorkoutQtyUnit] = None
     maxSpeed: Optional[WorkoutQtyUnit] = None
     avgHeartRate: Optional[WorkoutQtyUnit] = None
     maxHeartRate: Optional[WorkoutQtyUnit] = None
-    stepCount: Optional[WorkoutQtyUnit] = None
+    stepCount: Optional[list] = None
     stepCadence: Optional[WorkoutQtyUnit] = None
     flightsClimbed: Optional[WorkoutQtyUnit] = None
     intensity: Optional[WorkoutQtyUnit] = None

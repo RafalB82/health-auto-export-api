@@ -166,6 +166,12 @@ class Workout(Base):
     route_points = relationship(
         "WorkoutRoutePoint", back_populates="workout", cascade="all, delete-orphan"
     )
+    energy_points = relationship(
+        "WorkoutEnergy", back_populates="workout", cascade="all, delete-orphan"
+    )
+    step_points = relationship(
+        "WorkoutStep", back_populates="workout", cascade="all, delete-orphan"
+    )
 
 
 class WorkoutHeartRate(Base):
@@ -204,6 +210,45 @@ class WorkoutRoutePoint(Base):
     altitude = Column(Float, nullable=True)
 
     workout = relationship("Workout", back_populates="route_points")
+
+
+class WorkoutEnergy(Base):
+    """Seria czasowa activeEnergy treningu - 1 wiersz/minutę (kJ).
+    Rośnie naturalnie w trakcie dnia: kolejne sync'e dodają nowe minuty
+    (upsert po (workout_id, date)), zamiast delete+insert całości."""
+    __tablename__ = "workout_energy"
+    __table_args__ = (
+        UniqueConstraint("workout_id", "date", name="uq_workout_energy_minute"),
+        Index("ix_workout_energy_workout_date", "workout_id", "date"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    workout_id = Column(String, ForeignKey("workouts.id"), nullable=False)
+    date = Column(DateTime, nullable=False)
+    qty = Column(Float, nullable=False)
+    sample_count = Column(Integer, nullable=True)
+    units = Column(String, nullable=True)
+
+    workout = relationship("Workout", back_populates="energy_points")
+
+
+class WorkoutStep(Base):
+    """Seria czasowa stepCount treningu - 1 wiersz/minutę (steps).
+    Analogicznie do WorkoutEnergy - rośnie naturalnie w ciągu dnia."""
+    __tablename__ = "workout_steps"
+    __table_args__ = (
+        UniqueConstraint("workout_id", "date", name="uq_workout_step_minute"),
+        Index("ix_workout_step_workout_date", "workout_id", "date"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    workout_id = Column(String, ForeignKey("workouts.id"), nullable=False)
+    date = Column(DateTime, nullable=False)
+    qty = Column(Float, nullable=False)
+    sample_count = Column(Integer, nullable=True)
+    units = Column(String, nullable=True)
+
+    workout = relationship("Workout", back_populates="step_points")
 
 
 def init_db() -> None:

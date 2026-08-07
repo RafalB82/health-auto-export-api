@@ -203,17 +203,84 @@ def ingest_workout_heart_rate_bucketed(session: Session, workout_id: str,
     return len(buckets)
 
 
+def _series_sum(points) -> Optional[float]:
+    """Suma qty z serii czasowej (activeEnergy/stepCount jako listy obiektów).
+    Przyjmuje też pojedynczy obiekt (backward compat) - zwraca jego qty.
+    Zwraca None gdy brak danych."""
+    if not points:
+        return None
+    if isinstance(points, dict):  # pojedynczy obiekt {qty, units, ...}
+        return float(points["qty"]) if points.get("qty") is not None else None
+    total = 0.0
+    for p in points:
+        if isinstance(p, dict) and p.get("qty") is not None:
+            total += float(p["qty"])
+    return total
+
+
+def ingest_workout_energy(session: Session, workout_id: str, points) -> int:
+    """Zapisuje serię activeEnergy (lista obiektów) do WorkoutEnergy - 1 wiersz/minutę.
+    Upsert po (workout_id, date): nowe minuty dochodzą z każdym sync'em."""
+    if not isinstance(points, list):
+        return 0
+    buckets: dict[datetime, list[float]] = defaultdict(list)
+    units_seen: Optional[str] = None
+    for p in points:
+        ts = parse_dt(p.get("date"))
+        if ts is None or p.get("qty") is None:
+            continue
+        buckets[floor_to_minute(ts)].append(float(p["qty"]))
+        units_seen = p.get("units") or units_seen
+    for minute, values in buckets.items():
+        existing = (
+            session.query(models.WorkoutEnergy)
+            .filter_by(workout_id=workout_id, date=minute).one_or_none()
+        )
+        if existing is None:
+            existing = models.WorkoutEnergy(workout_id=workout_id, date=minute)
+            session.add(existing)
+        existing.qty = sum(values)
+        existing.sample_count = len(values)
+        existing.units = units_seen
+    return len(buckets)
+
+
+def ingest_workout_steps(session: Session, workout_id: str, points) -> int:
+    """Zapisuje serię stepCount (lista obiektów) do WorkoutStep - 1 wiersz/minutę."""
+    if not isinstance(points, list):
+        return 0
+    buckets: dict[datetime, list[float]] = defaultdict(list)
+    units_seen: Optional[str] = None
+    for p in points:
+        ts = parse_dt(p.get("date"))
+        if ts is None or p.get("qty") is None:
+            continue
+        buckets[floor_to_minute(ts)].append(float(p["qty"]))
+        units_seen = p.get("units") or units_seen
+    for minute, values in buckets.items():
+        existing = (
+            session.query(models.WorkoutStep)
+            .filter_by(workout_id=workout_id, date=minute).one_or_none()
+        )
+        if existing is None:
+            existing = models.WorkoutStep(workout_id=workout_id, date=minute)
+            session.add(existing)
+        existing.qty = sum(values)
+        existing.sample_count = len(values)
+        existing.units = units_seen
+    return len(buckets)
+
+
 def upsert_workout(session: Session, w: WorkoutEntry, session_id: Optional[str],
                     raw_payload_id: Optional[int]) -> None:
     existing = session.query(models.Workout).filter_by(id=w.id).one_or_none()
     if existing is None:
         existing = models.Workout(id=w.id)
         session.add(existing)
-    else:
-        # Powtórny sync tego samego treningu: czyścimy stare serie czasowe,
-        # bo mogą się różnić (np. inny time grouping) - wstawiamy świeże.
-        session.query(models.WorkoutHeartRate).filter_by(workout_id=w.id).delete()
-        session.query(models.WorkoutRoutePoint).filter_by(workout_id=w.id).delete()
+    # UWAGA: NIE czyścimy serii czasowych (HR/energia/kroki) przy powtórnym syncu.
+    # Trening przyrasta w ciągu dnia (nowe minuty dochodzą z każdym sync'em) - serie
+    # rosną przez upsert-per-minutę, więc delete+insert zniszczyłby przyrost.
+    # Jedynie route/track (pełna ścieżka, nie rośnie) zostaje nadpisywany niżej.
 
     existing.name = w.name
     existing.location = w.location
@@ -222,14 +289,17 @@ def upsert_workout(session: Session, w: WorkoutEntry, session_id: Optional[str],
     existing.end = parse_dt(w.end)
     existing.duration_s = w.duration
 
-    existing.active_energy_kj = w.activeEnergy.qty if w.activeEnergy else None
+    # activeEnergy / stepCount to SERIE (listy obiektów). W nagłówku trzymamy sumę
+    # (całkowita energia / całkowita liczba kroków treningu), szczegóły minutowe
+    # idą do osobnych tabel WorkoutEnergy / WorkoutStep.
+    existing.active_energy_kj = _series_sum(w.activeEnergy)
     existing.total_energy_kj = w.totalEnergy.qty if w.totalEnergy else None
     existing.distance_km = w.distance.qty if w.distance else None
     existing.avg_speed_kmh = w.avgSpeed.qty if w.avgSpeed else None
     existing.max_speed_kmh = w.maxSpeed.qty if w.maxSpeed else None
     existing.avg_heart_rate_bpm = w.avgHeartRate.qty if w.avgHeartRate else None
     existing.max_heart_rate_bpm = w.maxHeartRate.qty if w.maxHeartRate else None
-    existing.step_count = w.stepCount.qty if w.stepCount else None
+    existing.step_count = _series_sum(w.stepCount)
     existing.step_cadence = w.stepCadence.qty if w.stepCadence else None
     existing.flights_climbed = w.flightsClimbed.qty if w.flightsClimbed else None
     existing.intensity = w.intensity.qty if w.intensity else None
@@ -248,7 +318,12 @@ def upsert_workout(session: Session, w: WorkoutEntry, session_id: Optional[str],
 
     ingest_workout_heart_rate_bucketed(session, w.id, w.heartRateData, kind="active")
     ingest_workout_heart_rate_bucketed(session, w.id, w.heartRateRecovery, kind="recovery")
+    ingest_workout_energy(session, w.id, w.activeEnergy)
+    ingest_workout_steps(session, w.id, w.stepCount)
 
+    # Trasa to pełna ścieżka (nie rośnie w trakcie treningu w sposób przyrostowy,
+    # który warto kumulować - przy syncu pojawia się kompletna). Nadpisujemy.
+    session.query(models.WorkoutRoutePoint).filter_by(workout_id=w.id).delete()
     for point in w.route:
         ts = parse_dt(point.get("timestamp"))
         if ts is None or "lat" not in point or "lon" not in point:

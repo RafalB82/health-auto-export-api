@@ -8,3 +8,4 @@ venv-mcp/
 *.log
 
 .env
+debug_payloads/
