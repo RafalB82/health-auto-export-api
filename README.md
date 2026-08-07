@@ -10,22 +10,30 @@ Przetestowano na realnym eksporcie (27 metryk, 1 trening rowerowy z GPS,
 
 ```bash
 pip install -r requirements.txt --break-system-packages   # lub w venv bez tej flagi
-export HEALTH_API_KEY="wybierz-mocny-losowy-klucz"
-uvicorn app.main:app --host 0.0.0.0 --port 8000
+uvicorn app.main:app --host 0.0.0.0 --port 8001
 ```
 
 Baza SQLite (`health_data.db`) tworzy się automatycznie przy starcie w bieżącym katalogu.
+
+### Klucz API
+
+Klucz czytany jest w kolejności: zmienna env `HEALTH_API_KEY` → plik `.env` (obok projektu) → domyślny `change-me`. Wartość w `.env` może być podana jako base64 (żeby nie konfliktować z maskowaniem sekretów w shellu):
+
+```
+HEALTH_API_KEY=ZGV2LWxvY2FsLWtleQ==   # base64 z 'dev-local-key'
+```
+
+Bez ustawionego klucza endpoint loguje ostrzeżenie i przyjmuje dane bez autoryzacji (tryb dev) — w produkcji ZAWSZE ustaw klucz.
 
 ## Konfiguracja w Health Auto Export
 
 Automations -> New Automation -> REST API:
 
-- **URL**: `http://<adres-twojego-serwera>:8000/health-data`
-- **HTTP Headers**: dodaj `X-API-Key` = wartość, którą ustawiłeś w `HEALTH_API_KEY`
+- **URL**: `http://<adres-serwera>:8001/health-data`
+- **HTTP Headers**: dodaj `X-API-Key` = wartość z `HEALTH_API_KEY` / `.env`
 - **Export Format**: JSON
 - **Export Version**: 2
-- **Batch Requests**: włącz, jeśli eksportujesz treningi z GPS lub długie okresy —
-  patrz sekcja "Duże payloady" niżej
+- **Batch Requests**: włącz dla treningów z GPS/długich okresów — patrz „Duże payloady"
 
 ## Struktura bazy
 
@@ -41,15 +49,19 @@ Automations -> New Automation -> REST API:
 | `workout_steps` | Seria `stepCount` treningu — 1 wiersz/minutę |
 | `workout_route` | Punkty GPS trasy (lat/lon/altitude/timestamp) |
 
-## Idempotencja
+## Idempotencja i serie czasowe
 
-Metryki i sesje snu mają `UniqueConstraint` po `(nazwa, data, źródło)` — powtórny
-sync tego samego okna (np. przy Date Range "Since Last Sync") robi UPDATE,
-nie duplikuje wierszy. Treningi kluczowane są po natywnym UUID z Apple Health —
-powtórny sync usuwa stare punkty HR/trasy i wstawia świeże.
+Metryki i sesje snu mają `UniqueConstraint` po `(nazwa, data, źródło)` — powtórny sync robi UPDATE, nie duplikuje wierszy.
 
-Sprawdzone empirycznie: dwukrotny import tego samego pliku daje identyczną
-liczbę wierszy w każdej tabeli.
+Treningi identyfikowane są po natywnym UUID z Apple Health (`workouts.id`). Serie czasowe treningu (HR, energia, kroki) zapisywane są **per-minutę z upsertem po `(workout_id, date)`** — dzięki temu **trening rośnie naturalnie w ciągu dnia**: kolejne sync'e dodają nowe minuty, a powtórki istniejących minut robią UPDATE (bez churnu delete+insert). To obsługuje scenariusz, gdzie dane przyrastają z każdą synchronizacją/aktywnością.
+
+Trasa (`workout_route`) to pełna ścieżka — nadpisywana (delete+insert) przy powtórce.
+
+## Deduplikacja treningów (warstwa odczytu)
+
+Health Auto Export potrafi wysłać ten sam fizyczny wysiłek **dwa razy** (np. z zegarka Apple Watch i z iPhone'a/Hevy), pod różnym UUID i lekko innym `duration`/`source`. Idempotencja po `id` ich nie łączy.
+
+Warstwa odczytu (`app/query.py::get_workouts_deduped`) grupuje treningi po **(data, nazwa, czas startu do minuty)** i zwraca jednego reprezentanta (najdłuższy zapis) z flagą `deduped_copies`. Baza pozostaje wierna oryginalnym rekordom — dedupe dotyczy tylko odpowiedzi.
 
 ## Agregacja minutowa (heart_rate)
 
@@ -115,20 +127,68 @@ Konfiguracja w OpenClaw (`openclaw.json` → `mcp.servers.health-data`):
 }
 ```
 
-**Narzędzia:**
+**Narzędzia MCP — 4 grupy (A/B/C/D):**
 
-| Narzędzie | Źródło danych | Kiedy używać |
+#### Grupa A — `workout_*` (konkretne sesje treningowe)
+
+| Narzędzie | Źródło | Opis |
 |---|---|---|
-| `list_recent_workouts` | SQLite | Znalezienie `workout_id` bez zgadywania UUID |
-| `get_workout_summary` | SQLite (`workouts`) | Podsumowanie: dystans, prędkość, HR avg/max |
-| `get_workout_hr_minutely` | SQLite (`workout_heart_rate`) | Przebieg HR do wykresu — tanie, zindeksowane |
-| `get_workout_hr_trace` | Plik `.json.gz` na dysku | Pełna rozdzielczość sekunda-po-sekundzie — świadomie wolniejsze |
+| `list_recent_workouts(limit)` | SQLite | Lista ostatnich treningów z dedupe (id, nazwa, czas, dystans, HR, kroki, kcal, kopie) |
+| `get_workout_summary(workout_id)` | SQLite | Podsumowanie sesji: dystans, prędkość, HR avg/max, kroki, kcal, energia, elewacja |
+| `get_workout_hr_minutely(workout_id)` | SQLite | Tętno treningu 1 punkt/minutę (avg/min/max/count) |
+| `get_workout_series(workout_id)` | SQLite | Pełny profil: energia + kroki + HR na minutę + sumaryczne kcal/kroki |
+| `get_workout_hr_trace(workout_id)` | Plik `.json.gz` | Pełne HR sekunda-po-sekundzie z surowego payloadu (wolniejsze) |
 
-`get_workout_hr_trace` **nie zgaduje** pliku po dacie treningu — `Workout`
-ma kolumnę `raw_payload_id` ustawianą w momencie ingestu, więc trafienie
-w plik źródłowy jest gwarantowane, o ile trening był zapisany po
-wprowadzeniu tej kolumny. Starsze treningi (sprzed tej zmiany) zwrócą
-czytelny błąd zamiast zgadywania.
+#### Grupa B — `daily_*` (aktywność dzienna)
+
+| Narzędzie | Opis |
+|---|---|
+| `get_daily_activity(date)` | Kroki, dystans, kalorie (aktywne+basal), RHR, HRV, sen za dzień |
+| `get_daily_activity_range(start, end)` | Serie dzienne (kroki/kalorie/RHR/HRV/sen) do trendów |
+| `get_daily_series(date, metric, bucket)` | Profil metryki w ciągu dnia (godzinowo lub minutowo) |
+
+#### Grupa C — `metrics_*` (regeneracja: sen, HRV, RHR)
+
+| Narzędzie | Opis |
+|---|---|
+| `get_metric_trend(metric, start, end)` | Trend dzienny metryki: `sleep`, `resting_heart_rate`, `heart_rate_variability`, `step_count`, `active_energy`, ... |
+
+#### Grupa D — `generic_*` (uniwersalny odczyt dowolnych danych) ⭐
+
+| Narzędzie | Opis |
+|---|---|
+| `list_data()` | Lista WSZYSTKICH dostępnych danych (metryki, sen, treningi) |
+| `get_data(name, aggregation, from, to, detail)` | Generyczny odczyt dowolnej metryki/obszaru (`metrics`, `sleep`, `workouts`, lub dowolna metryka np. `apple_sleeping_wrist_temperature`) |
+
+Grupa D czyta **dowolną metrykę w bazie bez definiowania jej z góry** — każda nowa metryka, która wpadnie do bazy, jest automatycznie odpytywalna. Domyślnie zwraca zwarte podsumowanie (min/max/avg/latest + trend) zamiast surowych punktów, z **capem 500 punktów**, żeby nie generować zbędnych tokenów. Surowe punkty tylko przy `detail=true`.
+
+**Agregacja dzienna:** `step_count` → suma, `heart_rate_variability` → mediana, `resting_heart_rate` → ostatni pomiar; sen z osobnej tabeli (total/core/deep/rem/awake).
+
+`get_workout_hr_trace` **nie zgaduje** pliku po dacie — `Workout` ma kolumnę `raw_payload_id` ustawianą w ingestcie, więc trafienie w plik jest gwarantowane.
+
+## Architektura i struktura plików
+
+Projekt składa się z **dwóch niezależnych procesów** łączących się tym samym plikiem `health_data.db` i katalogiem `raw_payloads/`:
+
+1. **Webhook** (`app/main.py`, FastAPI, always-on HTTP na :8001) — odbiera dane z Health Auto Export, zapisuje raw payloady jako pliki, ingeruje do tabel. Endpointy: `GET /` (liveness), `GET /health`, `POST /health-data` (główny), `POST /health-data/test` (walidacja bez zapisu).
+2. **MCP server** (`mcp_server.py`, stdio) — uruchamiany na żądanie przez klienta (OpenClaw/trainer) do odpytywania danych treningowych przez asystenta.
+
+```
+health-auto-export-api/
+├── app/
+│   ├── __init__.py
+│   ├── main.py          # FastAPI webhook
+│   ├── db.py            # SQLAlchemy: schemat (11 tabel)
+│   ├── schemas.py       # Pydantic: walidacja payloadu (JSON v2)
+│   ├── ingest.py        # parsowanie + zapis + agregacja minutowa
+│   ├── raw_storage.py   # save/load raw payloadów jako .json.gz
+│   └── query.py         # warstwa odczytu (MCP): workout/daily/metrics/generic
+├── mcp_server.py        # MCP (stdio) — 11 narzędzi w 4 grupach
+├── requirements.txt     # webhook
+├── requirements-mcp.txt # MCP (osobny venv-mcp)
+├── .env                 # klucz API (nie w repo)
+└── raw_payloads/        # surowe payloady (nie w repo)
+```
 
 ## Duże payloady (GPS, długie okresy)
 
@@ -145,8 +205,8 @@ tych samych danych w kilku mniejszych requestach jest bezpieczny.
 
 ## Bezpieczeństwo — do zrobienia przed produkcją
 
-- `HEALTH_API_KEY` musi być ustawiony jako zmienna środowiskowa — bez niego
-  endpoint loguje ostrzeżenie i **przyjmuje dane bez autoryzacji**.
+- `HEALTH_API_KEY` musi być ustawiony (env lub `.env`) — bez niego endpoint
+  loguje ostrzeżenie i **przyjmuje dane bez autoryzacji**.
 - Serwer nie ma wbudowanego HTTPS — do wystawienia w sieci publicznej
   postaw za nginx/caddy z TLS, albo używaj Tailscale/VPN zamiast
   otwierania portu na świat.
