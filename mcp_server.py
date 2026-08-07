@@ -38,6 +38,10 @@ from app.query import (
     get_workout_hr_trace,
     get_workouts_deduped,
     get_workout_series,
+    get_daily_activity,
+    get_daily_activity_range,
+    get_daily_series,
+    get_metric_trend,
     WorkoutNotFoundError,
     RawPayloadUnavailableError,
 )
@@ -119,6 +123,67 @@ async def list_tools() -> list[Tool]:
                 "required": ["workout_id"],
             },
         ),
+        Tool(
+            name="get_daily_activity",
+            description=(
+                "Aktywność dzienna: kroki, dystans, kalorie (aktywne + basal), RHR, HRV "
+                "i sen (total/core/deep/rem) za podany dzień. Bazowy 'jak wyglądał mój dzień'."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "date": {"type": "string", "description": "Dzień YYYY-MM-DD"},
+                },
+                "required": ["date"],
+            },
+        ),
+        Tool(
+            name="get_daily_activity_range",
+            description=(
+                "Serie dzienne aktywności (kroki, kalorie, dystans, RHR, HRV, sen) "
+                "w zakresie dat - do trendów tygodniowych/miesięcznych."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "start_date": {"type": "string", "description": "Start YYYY-MM-DD"},
+                    "end_date": {"type": "string", "description": "Koniec YYYY-MM-DD (włącznie)"},
+                },
+                "required": ["start_date", "end_date"],
+            },
+        ),
+        Tool(
+            name="get_daily_series",
+            description=(
+                "Profil metryki w ciągu dnia: 1 punkt/godzinę (default) lub minutę. "
+                "Np. active_energy -> kalorie na godzinę, step_count -> kroki na godzinę."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "date": {"type": "string", "description": "Dzień YYYY-MM-DD"},
+                    "metric": {"type": "string", "description": "Nazwa metryki (np. active_energy, step_count, heart_rate)"},
+                    "bucket": {"type": "string", "enum": ["hour", "minute"], "description": "Agregacja godzinowa (default) lub minutowa"},
+                },
+                "required": ["date", "metric"],
+            },
+        ),
+        Tool(
+            name="get_metric_trend",
+            description=(
+                "Trend dzienny metryki w zakresie dat - regeneracja (sen, HRV, RHR, "
+                "rest_hr) lub aktywność. Zwraca {date: wartość}."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "metric": {"type": "string", "description": "Metryka: sleep, resting_heart_rate, heart_rate_variability, step_count, active_energy..."},
+                    "start_date": {"type": "string", "description": "Start YYYY-MM-DD"},
+                    "end_date": {"type": "string", "description": "Koniec YYYY-MM-DD"},
+                },
+                "required": ["metric", "start_date", "end_date"],
+            },
+        ),
     ]
 
 
@@ -146,6 +211,22 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         if name == "get_workout_hr_trace":
             result = get_workout_hr_trace(db, arguments["workout_id"])
             return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2))]
+
+        if name == "get_daily_activity":
+            result = get_daily_activity(arguments["date"])
+            return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2, default=str))]
+
+        if name == "get_daily_activity_range":
+            result = get_daily_activity_range(arguments["start_date"], arguments["end_date"])
+            return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2, default=str))]
+
+        if name == "get_daily_series":
+            result = get_daily_series(arguments["date"], arguments["metric"], arguments.get("bucket", "hour"))
+            return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2, default=str))]
+
+        if name == "get_metric_trend":
+            result = get_metric_trend(arguments["metric"], arguments["start_date"], arguments["end_date"])
+            return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2, default=str))]
 
         return [TextContent(type="text", text=f"Nieznane narzędzie: {name}")]
 

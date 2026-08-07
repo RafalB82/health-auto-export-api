@@ -19,6 +19,7 @@ dla danych zaimportowanych przed wprowadzeniem tej kolumny).
 """
 from __future__ import annotations
 
+import collections
 import json
 from typing import Optional
 
@@ -26,6 +27,7 @@ from sqlalchemy.orm import Session
 
 from app import db as models
 from app.raw_storage import load_raw_payload
+from app.db import SessionLocal
 
 
 class WorkoutNotFoundError(Exception):
@@ -220,3 +222,142 @@ def get_workout_hr_trace(session: Session, workout_id: str) -> list[dict]:
         )
 
     return matching.get("heartRateData", [])
+
+
+# ---------------------------------------------------------------------------
+# GRUPA D - DAILY (codzienna aktywność) oraz GRUPA C - METRICS (regeneracja)
+# ---------------------------------------------------------------------------
+
+# Metryki, których dzienna wartość to SUMA wierszy danego dnia (kursowe).
+SUM_DAILY_METRICS = {"step_count"}
+# Metryki, których dzienna wartość to MEDIANA próbek (np. wiele pomiarów HRV dziennie).
+MEDIAN_DAILY_METRICS = {"heart_rate_variability"}
+# Metryki, których dzienna wartość to OSTATNI/pojedynczy pomiar danego dnia.
+LAST_DAILY_METRICS = {"resting_heart_rate", "respiratory_rate", "apple_sleeping_wrist_temperature"}
+
+
+def _agg_daily(values: list[float], metric: str) -> Optional[float]:
+    if not values:
+        return None
+    if metric in SUM_DAILY_METRICS:
+        return sum(values)
+    if metric in MEDIAN_DAILY_METRICS:
+        s = sorted(values)
+        n = len(s)
+        return s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2
+    return values[-1]  # last / single
+
+
+def _metric_points_for_date(session: Session, metric: str, day) -> list[MetricPoint]:
+    start = day.replace(hour=0, minute=0, second=0, microsecond=0)
+    end = start.replace(hour=23, minute=59, second=59, microsecond=999999)
+    return (
+        session.query(models.MetricPoint)
+        .filter(models.MetricPoint.metric_name == metric,
+                models.MetricPoint.date >= start,
+                models.MetricPoint.date <= end)
+        .order_by(models.MetricPoint.date)
+        .all()
+    )
+
+
+def get_daily_activity(day) -> dict:
+    """Aktywność dzienna: kroki, dystans, energia, RHR, HRV - agregowana z metric_points."""
+    from datetime import datetime
+    if isinstance(day, str):
+        day = datetime.fromisoformat(day).replace(tzinfo=None) if "T" in day else datetime.strptime(day, "%Y-%m-%d")
+    db = SessionLocal()
+    try:
+        out: dict = {"date": day.strftime("%Y-%m-%d")}
+        order = ["step_count", "walking_running_distance", "active_energy",
+                 "basal_energy_burned", "resting_heart_rate", "heart_rate_variability"]
+        for metric in order:
+            rows = _metric_points_for_date(db, metric, day)
+            vals = [r.qty for r in rows if r.qty is not None]
+            out[metric] = _agg_daily(vals, metric)
+        # sen z osobu tabela (sleep_sessions)
+        sleep = (
+            db.query(models.SleepSession)
+            .filter(models.SleepSession.date >= day.replace(hour=0, minute=0, second=0, microsecond=0),
+                    models.SleepSession.date <= day.replace(hour=23, minute=59, second=59, microsecond=999999))
+            .all()
+        )
+        if sleep:
+            s = sleep[0]
+            out["sleep"] = {
+                "total_hours": round(s.total_sleep, 2) if s.total_sleep else None,
+                "core_hours": round(s.core, 2) if s.core else None,
+                "deep_hours": round(s.deep, 2) if s.deep else None,
+                "rem_hours": round(s.rem, 2) if s.rem else None,
+                "awake_hours": round(s.awake, 2) if s.awake else None,
+            }
+        else:
+            out["sleep"] = None
+        return out
+    finally:
+        db.close()
+
+
+def get_daily_activity_range(start_day, end_day) -> list[dict]:
+    """Serie dzienne aktywności w zakresie dat - do trendów tygodnia/miesiąca."""
+    from datetime import datetime, timedelta
+    if isinstance(start_day, str):
+        start_day = datetime.strptime(start_day, "%Y-%m-%d")
+    if isinstance(end_day, str):
+        end_day = datetime.strptime(end_day, "%Y-%m-%d")
+    out = []
+    day = start_day
+    while day <= end_day:
+        out.append(get_daily_activity(day))
+        day += timedelta(days=1)
+    return out
+
+
+def get_daily_series(day, metric: str, bucket: str = "hour") -> dict:
+    """Profil metryki w ciągu dnia - zagregowany do godzin (default) lub minut.
+
+    bucket='hour' -> 1 punkt/godzinę (24 punktów), bucket='minute' -> surowe minuty.
+    """
+    from datetime import datetime
+    if isinstance(day, str):
+        day = datetime.strptime(day, "%Y-%m-%d")
+    db = SessionLocal()
+    try:
+        rows = _metric_points_for_date(db, metric, day)
+        by_bucket: dict = collections.defaultdict(list)
+        for r in rows:
+            if r.qty is None:
+                continue
+            key = r.date.strftime("%Y-%m-%d %H:00") if bucket == "hour" else r.date.strftime("%Y-%m-%d %H:%M")
+            by_bucket[key].append(r.qty)
+        series = [
+            {
+                "bucket": k,
+                "value": _agg_daily(v, metric),
+                "samples": len(v),
+            }
+            for k, v in sorted(by_bucket.items())
+        ]
+        return {"date": day.strftime("%Y-%m-%d"), "metric": metric, "bucket": bucket, "series": series}
+    finally:
+        db.close()
+
+
+def get_metric_trend(metric: str, start_day, end_day) -> dict:
+    """Trend dzienny wybranej metryki w zakresie - np. sen, HRV, RHR (regeneracja).
+    Zakres dat (string YYYY-MM-DD). Zwraca {date: wartość}."""
+    from datetime import datetime, timedelta
+    if isinstance(start_day, str):
+        start_day = datetime.strptime(start_day, "%Y-%m-%d")
+    if isinstance(end_day, str):
+        end_day = datetime.strptime(end_day, "%Y-%m-%d")
+    days = get_daily_activity_range(start_day, end_day)
+    trend = []
+    for d in days:
+        if metric == "sleep":
+            val = (d.get("sleep") or {}).get("total_hours")
+        else:
+            val = d.get(metric)
+        trend.append({"date": d["date"], "value": val})
+    return {"metric": metric, "trend": trend}
+
