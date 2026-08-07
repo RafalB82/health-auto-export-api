@@ -43,7 +43,10 @@ Base = declarative_base()
 
 
 class RawPayload(Base):
-    """Surowy JSON każdego requestu - do debugowania i ewentualnego reprocessingu."""
+    """Metadane surowego payloadu każdego requestu - sam JSON leży na dysku
+    jako plik .json.gz (patrz app/raw_storage.py), tutaj tylko wskaźnik + audyt.
+    Rozdzielenie od SQLite: przy ~100MB/dzień surowych danych trzymanie tego
+    jako BLOB w bazie degraduje wydajność insertów i przyspiesza zużycie karty SD."""
     __tablename__ = "raw_payloads"
 
     id = Column(Integer, primary_key=True)
@@ -53,7 +56,9 @@ class RawPayload(Base):
     automation_period = Column(String, nullable=True)
     automation_aggregation = Column(String, nullable=True)
     session_id = Column(String, nullable=True, index=True)
-    payload = Column(Text, nullable=False)  # pełny json.dumps(body)
+    file_path = Column(String, nullable=False)  # ścieżka względna do pliku .json.gz na dysku
+    size_bytes_raw = Column(Integer, nullable=True)      # rozmiar przed kompresją
+    size_bytes_compressed = Column(Integer, nullable=True)  # rozmiar pliku .gz na dysku
 
 
 class MetricPoint(Base):

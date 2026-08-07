@@ -1,7 +1,5 @@
-INFO:     Started server process [495148]
+INFO:     Started server process [496417]
 INFO:     Waiting for application startup.
 INFO:health-api:DB zainicjalizowana (SQLite: health_data.db)
-INFO:health-api:Cleanup raw_payloads: co 7 dni, pierwsze uruchomienie przy starcie
 INFO:     Application startup complete.
 INFO:     Uvicorn running on http://0.0.0.0:8001 (Press CTRL+C to quit)
-INFO:health-api:Cleanup raw_payloads: usunięto 0 wierszy (co 7 dni)

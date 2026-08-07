@@ -16,22 +16,22 @@ client_max_body_size (np. 200m), inaczej nginx utnie request przed FastAPI.
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import os
 from contextlib import asynccontextmanager
+from datetime import datetime
 from typing import Optional
 
 from fastapi import FastAPI, Header, HTTPException, Request, Depends
 from pydantic import ValidationError
-from sqlalchemy import delete as sa_delete
 from sqlalchemy.orm import Session
 
 from app.db import init_db, get_db, SessionLocal
 from app.db import RawPayload
 from app.schemas import HealthExportPayload
 from app.ingest import ingest_payload
+from app.raw_storage import save_raw_payload
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("health-api")
@@ -40,49 +40,12 @@ logger = logging.getLogger("health-api")
 # zmienną środowiskową przed uruchomieniem: export HEALTH_API_KEY="..."
 API_KEY = os.environ.get("HEALTH_API_KEY", "change-me")
 
-# Co ile dni czyścić całą tabelę raw_payloads (surowe JSON-y każdego requestu).
-# To dominujące źródło przyrostu bazy - trzymamy je tylko jako siatkę bezpieczeństwa
-# do debugowania; po wystartowaniu serwera i co CLEANUP_INTERVAL_DAYS kasujemy całość.
-CLEANUP_INTERVAL_DAYS = int(os.environ.get("RAW_PAYLOAD_CLEANUP_DAYS", "7"))
-
-
-def cleanup_raw_payloads() -> int:
-    """Usuwa CAŁĄ zawartość raw_payloads. Zwraca liczbę usuniętych wierszy."""
-    with SessionLocal() as db:
-        deleted = db.execute(sa_delete(RawPayload)).rowcount
-        db.commit()
-    return deleted
-
-
-async def raw_payload_cleanup_loop():
-    """Pętla w tle: czyści raw_payloads przy starcie, potem co CLEANUP_INTERVAL_DAYS."""
-    interval_s = CLEANUP_INTERVAL_DAYS * 86400
-    while True:
-        try:
-            deleted = await asyncio.to_thread(cleanup_raw_payloads)
-            logger.info(
-                "Cleanup raw_payloads: usunięto %d wierszy (co %d dni)",
-                deleted, CLEANUP_INTERVAL_DAYS,
-            )
-        except Exception:
-            logger.exception("Cleanup raw_payloads nie powiódł się")
-        await asyncio.sleep(interval_s)
-
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
     logger.info("DB zainicjalizowana (SQLite: health_data.db)")
-    cleanup_task = asyncio.create_task(raw_payload_cleanup_loop())
-    logger.info("Cleanup raw_payloads: co %d dni, pierwsze uruchomienie przy starcie", CLEANUP_INTERVAL_DAYS)
-    try:
-        yield
-    finally:
-        cleanup_task.cancel()
-        try:
-            await cleanup_task
-        except asyncio.CancelledError:
-            pass
+    yield
 
 
 app = FastAPI(title="Health Auto Export Receiver", lifespan=lifespan)
@@ -105,7 +68,7 @@ def root() -> dict:
         "status": "ok",
         "service": "health-auto-export-api",
         "api_key_set": API_KEY != "change-me",
-        "raw_payload_cleanup_days": CLEANUP_INTERVAL_DAYS,
+        "raw_payloads": "files on disk (json.gz), not DB blob",
     }
 
 
@@ -180,15 +143,22 @@ async def receive_health_data(
 
     db: Session = SessionLocal()
     try:
-        # Surowy payload zapisujemy zawsze, niezależnie od dalszego parsowania -
-        # to Twoja siatka bezpieczeństwa przy zmianach schematu po stronie Apple/appki.
+        # Surowy payload zapisujemy zawsze jako skompresowany plik na dysku
+        # (patrz app/raw_storage.py) - to Twoja siatka bezpieczeństwa przy
+        # zmianach schematu lub logiki agregacji, bez obciążania SQLite dużym BLOB-em.
+        received_at = datetime.utcnow()
+        file_path, size_raw, size_gz = save_raw_payload(raw_body, received_at, session_id)
+
         db.add(RawPayload(
+            received_at=received_at,
             automation_name=automation_name,
             automation_id=automation_id,
             automation_period=automation_period,
             automation_aggregation=automation_aggregation,
             session_id=session_id,
-            payload=raw_body.decode("utf-8", errors="replace"),
+            file_path=file_path,
+            size_bytes_raw=size_raw,
+            size_bytes_compressed=size_gz,
         ))
         db.commit()
 
@@ -201,8 +171,12 @@ async def receive_health_data(
         db.close()
 
     logger.info(
-        "Przyjęto payload: automation=%s session=%s metrics=%d points=%d workouts=%d",
+        "Przyjęto payload: automation=%s session=%s metrics=%d points=%d workouts=%d "
+        "raw=%dKB gz=%dKB (%.0f%% redukcji)",
         automation_name, session_id, counts["metrics"], counts["metric_points"], counts["workouts"],
+        size_raw // 1024, size_gz // 1024,
+        (1 - size_gz / size_raw) * 100 if size_raw else 0,
     )
 
-    return {"status": "ok", **counts}
+    return {"status": "ok", **counts,
+            "raw_size_kb": size_raw // 1024, "compressed_size_kb": size_gz // 1024}

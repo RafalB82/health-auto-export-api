@@ -66,6 +66,27 @@ wykresu, min/max do wychwycenia skoków). Surowe punkty nadal są dostępne w
 `blood_oxygen_saturation` z podobną granularnością), dopisz jej nazwę do
 zbioru `HIGH_GRANULARITY_METRICS` w `app/ingest.py` — bez zmian w reszcie kodu.
 
+## Surowe payloady — pliki, nie BLOB w bazie
+
+Przy dniach treningowych (~100 MB surowego JSON-a z HR live + trasą GPS
+próbkowaną co sekundę) trzymanie tego w kolumnie SQLite `TEXT` degraduje
+wydajność insertów i przyspiesza zużycie karty SD. Zamiast tego każdy
+request zapisywany jest jako skompresowany plik:
+
+```
+raw_payloads/<rok>/<miesiац>/<dzien>/<timestamp>-<session-id>.json.gz
+```
+
+W SQLite (`raw_payloads`) zostaje tylko ścieżka + rozmiar przed/po kompresji.
+Na realnym pliku testowym gzip dał **84.5% redukcji** — dzień 100 MB spada
+do ~15 MB na dysku, czyli ~5.5 GB/rok przy codziennych treningach. Zero utraty
+danych: `app/raw_storage.py::load_raw_payload()` odtwarza oryginalny JSON
+bajt w bajt, do reprocessingu przy zmianie logiki agregacji.
+
+Katalog `raw_payloads/` nie jest automatycznie czyszczony — to świadoma
+decyzja: to tani, skompresowany log plikowy, a nie ciężki BLOB w bazie.
+Zarządzaj nim ręcznie (np. `rsync` starszych miesięcy na inny dysk).
+
 ## Duże payloady (GPS, długie okresy)
 
 Testowy plik (jeden dzień + jeden 88-minutowy trening rowerowy) miał
