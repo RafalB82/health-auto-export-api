@@ -262,6 +262,36 @@ def _agg_daily(values: list[float], metric: str) -> Optional[float]:
     return values[-1]  # last / single
 
 
+def _dedup_rows(rows: list["MetricPoint"]) -> list[MetricPoint]:
+    """Dedupuje wiersze po MINUCIE (usuwa powielone pomiary z różnych źródeł).
+
+    Health Kit raportuje ten sam pomiar z zegarka pod wieloma identyfikatorami
+    źródła (np. 'Apple Watch', 'Apple Watch|Connect', ...). Na wspólnych
+    minutach wartości są IDENTYCZNE, więc `sum()` w _agg_daily liczy je
+    wielokrotnie -> zawyżone dzienne sumy (nawet ~3x).
+
+    Zwraca jedną wiersz per unikalna minuta (z preferencją dla wiersza z
+    wartością, gdyby któreś źródło miało qty=None w tej minucie), zachowując
+    chronologię. Do użycia PRZED sumowaniem metryk z SUM_DAILY_METRICS.
+    """
+    if not rows:
+        return rows
+    # pierwszy wiersz każdej minuty, nadpisany przez lepszy (z wartością) jeśli się pojawi
+    best: dict[str, "MetricPoint"] = {}
+    order: list[str] = []
+    for r in rows:
+        minute = r.date.strftime("%Y-%m-%d %H:%M")
+        if minute not in best:
+            best[minute] = r
+            order.append(minute)
+        else:
+            cur = best[minute]
+            # preferuj wiersz z qty (wartość) nad None w tej samej minucie
+            if cur.qty is None and r.qty is not None:
+                best[minute] = r
+    return [best[m] for m in order]
+
+
 def _metric_points_for_date(session: Session, metric: str, day) -> list[MetricPoint]:
     start = day.replace(hour=0, minute=0, second=0, microsecond=0)
     end = start.replace(hour=23, minute=59, second=59, microsecond=999999)
@@ -291,6 +321,11 @@ def get_daily_activity(day) -> dict:
                  "body_mass_index", "height"]
         for metric in order:
             rows = _metric_points_for_date(db, metric, day)
+            # metryki sumujące dwadzieścia razy liczą te same pomiary z różnych
+            # źródeł Health Kit (Apple Watch pojawia się pod kilkoma źródłami) ->
+            # deduplikacja po minucie, zanim sumujemy (bug: zawyżone dzienne sumy)
+            if metric in SUM_DAILY_METRICS:
+                rows = _dedup_rows(rows)
             vals = [r.qty for r in rows if r.qty is not None]
             out[metric] = _agg_daily(vals, metric)
         # sen z osobu tabela (sleep_sessions)
