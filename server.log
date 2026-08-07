@@ -1,5 +1,0 @@
-INFO:     Started server process [496417]
-INFO:     Waiting for application startup.
-INFO:health-api:DB zainicjalizowana (SQLite: health_data.db)
-INFO:     Application startup complete.
-INFO:     Uvicorn running on http://0.0.0.0:8001 (Press CTRL+C to quit)

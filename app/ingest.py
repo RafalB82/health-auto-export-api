@@ -203,7 +203,8 @@ def ingest_workout_heart_rate_bucketed(session: Session, workout_id: str,
     return len(buckets)
 
 
-def upsert_workout(session: Session, w: WorkoutEntry, session_id: Optional[str]) -> None:
+def upsert_workout(session: Session, w: WorkoutEntry, session_id: Optional[str],
+                    raw_payload_id: Optional[int]) -> None:
     existing = session.query(models.Workout).filter_by(id=w.id).one_or_none()
     if existing is None:
         existing = models.Workout(id=w.id)
@@ -241,6 +242,7 @@ def upsert_workout(session: Session, w: WorkoutEntry, session_id: Optional[str])
     existing.elevation_ascent_m = w.elevation.ascent if w.elevation else None
     existing.elevation_descent_m = w.elevation.descent if w.elevation else None
     existing.session_id = session_id
+    existing.raw_payload_id = raw_payload_id
 
     session.flush()  # potrzebne żeby workout_id istniał przed insertami dzieci
 
@@ -258,8 +260,13 @@ def upsert_workout(session: Session, w: WorkoutEntry, session_id: Optional[str])
 
 
 def ingest_payload(session: Session, payload: HealthExportPayload,
-                    session_id: Optional[str]) -> dict:
-    """Zapisuje cały payload w jednej transakcji. Zwraca licznik dla response."""
+                    session_id: Optional[str], raw_payload_id: Optional[int] = None) -> dict:
+    """Zapisuje cały payload w jednej transakcji. Zwraca licznik dla response.
+
+    Commit zostawiany wywołującemu (main.py) - bo raw_payload_id musi być
+    ustawione po zapisie RawPayload (db.flush()), zanim workouty dostaną
+    link do pliku źródłowego.
+    """
     counts = {"metrics": 0, "metric_points": 0, "workouts": 0}
 
     for metric in payload.data.metrics:
@@ -274,8 +281,7 @@ def ingest_payload(session: Session, payload: HealthExportPayload,
                 counts["metric_points"] += 1
 
     for workout in payload.data.workouts:
-        upsert_workout(session, workout, session_id)
+        upsert_workout(session, workout, session_id, raw_payload_id)
         counts["workouts"] += 1
 
-    session.commit()
     return counts

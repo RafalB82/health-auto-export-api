@@ -155,6 +155,11 @@ class Workout(Base):
     session_id = Column(String, nullable=True)
     received_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
+    raw_payload_id = Column(Integer, ForeignKey("raw_payloads.id"), nullable=True)
+    # ^ link do pliku źródłowego (patrz app/raw_storage.py) ustawiany w ingest.py
+    # w momencie przetwarzania - unika zgadywania "który plik z tego dnia" przy
+    # odczycie sekunda-po-sekundzie (get_workout_hr_trace w app/query.py).
+
     heart_rate_points = relationship(
         "WorkoutHeartRate", back_populates="workout", cascade="all, delete-orphan"
     )

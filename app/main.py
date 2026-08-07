@@ -149,7 +149,7 @@ async def receive_health_data(
         received_at = datetime.utcnow()
         file_path, size_raw, size_gz = save_raw_payload(raw_body, received_at, session_id)
 
-        db.add(RawPayload(
+        raw_payload_row = RawPayload(
             received_at=received_at,
             automation_name=automation_name,
             automation_id=automation_id,
@@ -159,10 +159,12 @@ async def receive_health_data(
             file_path=file_path,
             size_bytes_raw=size_raw,
             size_bytes_compressed=size_gz,
-        ))
-        db.commit()
+        )
+        db.add(raw_payload_row)
+        db.flush()  # potrzebne żeby raw_payload_row.id istniał przed przekazaniem do ingestu
 
-        counts = ingest_payload(db, payload, session_id)
+        counts = ingest_payload(db, payload, session_id, raw_payload_id=raw_payload_row.id)
+        db.commit()
     except Exception:
         db.rollback()
         logger.exception("Błąd podczas zapisu payloadu")

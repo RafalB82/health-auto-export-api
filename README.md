@@ -87,6 +87,47 @@ Katalog `raw_payloads/` nie jest automatycznie czyszczony — to świadoma
 decyzja: to tani, skompresowany log plikowy, a nie ciężki BLOB w bazie.
 Zarządzaj nim ręcznie (np. `rsync` starszych miesięcy na inny dysk).
 
+## Dostęp przez MCP (odpytywanie danych treningowych przez asystenta)
+
+`mcp_server.py` wystawia dane treningowe jako narzędzia MCP **po stdio**. Prosty
+lokalny transport: klient MCP (OpenClaw / trainer) uruchamia ten proces
+bezpośrednio na tym samym hoście, bez sieci.
+
+**Wymaga osobnego środowiska** (`requirements-mcp.txt`) — pakiet `mcp` podnosi
+`starlette` do wersji niezgodnej z FastAPI używanym przez webhook, więc oba
+serwery nie mogą współdzielić jednego venv. To i tak ma sens architektonicznie:
+webhook (FastAPI, always-on HTTP) i MCP (stdio, uruchamiany na żądanie klienta)
+to różne procesy o różnym cyklu życia — łączy je wspólny plik `health_data.db`
+i katalog `raw_payloads/`.
+
+```bash
+python3 -m venv venv-mcp
+venv-mcp/bin/pip install -r requirements-mcp.txt
+```
+
+Konfiguracja w OpenClaw (`openclaw.json` → `mcp.servers.health-data`):
+```json
+{
+  "command": "/home/rafal/health-auto-export-api/venv-mcp/bin/python",
+  "args": ["/home/rafal/health-auto-export-api/mcp_server.py"]
+}
+```
+
+**Narzędzia:**
+
+| Narzędzie | Źródło danych | Kiedy używać |
+|---|---|---|
+| `list_recent_workouts` | SQLite | Znalezienie `workout_id` bez zgadywania UUID |
+| `get_workout_summary` | SQLite (`workouts`) | Podsumowanie: dystans, prędkość, HR avg/max |
+| `get_workout_hr_minutely` | SQLite (`workout_heart_rate`) | Przebieg HR do wykresu — tanie, zindeksowane |
+| `get_workout_hr_trace` | Plik `.json.gz` na dysku | Pełna rozdzielczość sekunda-po-sekundzie — świadomie wolniejsze |
+
+`get_workout_hr_trace` **nie zgaduje** pliku po dacie treningu — `Workout`
+ma kolumnę `raw_payload_id` ustawianą w momencie ingestu, więc trafienie
+w plik źródłowy jest gwarantowane, o ile trening był zapisany po
+wprowadzeniu tej kolumny. Starsze treningi (sprzed tej zmiany) zwrócą
+czytelny błąd zamiast zgadywania.
+
 ## Duże payloady (GPS, długie okresy)
 
 Testowy plik (jeden dzień + jeden 88-minutowy trening rowerowy) miał
