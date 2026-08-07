@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, field_validator
 
 
 class MetricEntry(BaseModel):
@@ -28,11 +28,24 @@ class MetricEntry(BaseModel):
 
 
 class WorkoutQtyUnit(BaseModel):
-    """Wspólny kształt skalarnych pól treningu: {qty, units}."""
+    """Wspólny kształt skalarnych pól treningu: {qty, units}.
+
+    Health Auto Export v2 wysyła czasem `qty` jako string (np. "11.17128")
+    zamiast liczby - akceptujemy oba i normalizujemy do float."""
     model_config = ConfigDict(extra="allow")
 
     qty: Optional[float] = None
     units: Optional[str] = None
+
+    @field_validator("qty", mode="before")
+    @classmethod
+    def _coerce_qty(cls, v):
+        if v is None or isinstance(v, (int, float)):
+            return v
+        try:
+            return float(str(v))
+        except (TypeError, ValueError):
+            return v  # zostaw - Pydantic i tak zgłosi błąd walidacji float
 
 
 class WorkoutElevation(BaseModel):
@@ -41,6 +54,16 @@ class WorkoutElevation(BaseModel):
     ascent: Optional[float] = None
     descent: Optional[float] = None
     units: Optional[str] = None
+
+    @field_validator("ascent", "descent", mode="before")
+    @classmethod
+    def _coerce_elev(cls, v):
+        if v is None or isinstance(v, (int, float)):
+            return v
+        try:
+            return float(str(v))
+        except (TypeError, ValueError):
+            return v
 
 
 class WorkoutEntry(BaseModel):
