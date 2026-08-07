@@ -2,10 +2,10 @@
 FastAPI serwer odbierający dane z Health Auto Export (REST API automation, JSON v2).
 
 Uruchomienie:
-    uvicorn app.main:app --host 0.0.0.0 --port 8000
+    uvicorn app.main:app --host 0.0.0.0 --port 8001
 
 Konfiguracja w apce (Automations -> REST API):
-    URL: http://<twoj-host>:8000/health-data
+    URL: http://<twoj-host>:8001/health-data
     Header: X-API-Key: <wartość z API_KEY poniżej>
     Export Format: JSON
     Export Version: 2

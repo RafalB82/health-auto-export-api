@@ -187,15 +187,15 @@ Konfiguracja w OpenClaw (`openclaw.json` → `mcp.servers.health-data`):
 
 | Narzędzie | Opis |
 |---|---|
-| `get_daily_activity(date)` | Kroki, dystans, kalorie (aktywne+basal), RHR, HRV, sen za dzień |
-| `get_daily_activity_range(start, end)` | Serie dzienne (kroki/kalorie/RHR/HRV/sen) do trendów |
+| `get_daily_activity(date)` | Kroki, dystans, kalorie (aktywne+basal), czas ćwiczeń/stania, RHR, HRV, metryki wagowe (waga, body fat, lean mass, BMI, wzrost) i sen za dzień |
+| `get_daily_activity_range(start, end)` | Serie dzienne (kroki/kalorie/RHR/HRV/sen/metryki wagowe) do trendów |
 | `get_daily_series(date, metric, bucket)` | Profil metryki w ciągu dnia (godzinowo lub minutowo) |
 
 #### Grupa C — `metrics_*` (regeneracja: sen, HRV, RHR)
 
 | Narzędzie | Opis |
 |---|---|
-| `get_metric_trend(metric, start, end)` | Trend dzienny metryki: `sleep`, `resting_heart_rate`, `heart_rate_variability`, `step_count`, `active_energy`, ... |
+| `get_metric_trend(metric, start, end)` | Trend dzienny metryki: `sleep`, `resting_heart_rate`, `heart_rate_variability`, `step_count`, `active_energy`, `weight_body_mass`, `body_fat_percentage`, ... |
 
 #### Grupa D — `generic_*` (uniwersalny odczyt dowolnych danych) ⭐
 
@@ -206,7 +206,15 @@ Konfiguracja w OpenClaw (`openclaw.json` → `mcp.servers.health-data`):
 
 Grupa D czyta **dowolną metrykę w bazie bez definiowania jej z góry** — każda nowa metryka, która wpadnie do bazy, jest automatycznie odpytywalna. Domyślnie zwraca zwarte podsumowanie (min/max/avg/latest + trend) zamiast surowych punktów, z **capem 500 punktów**, żeby nie generować zbędnych tokenów. Surowe punkty tylko przy `detail=true`.
 
-**Agregacja dzienna:** `step_count` → suma, `heart_rate_variability` → mediana, `resting_heart_rate` → ostatni pomiar; sen z osobnej tabeli (total/core/deep/rem/awake).
+**Agregacja dzienna** (w `app/query.py::_agg_daily`, wspólna dla `get_daily_activity`, `get_daily_series`, `get_metric_trend` i `get_data(aggregation=daily)`):
+
+- **SUMA** (`SUM_DAILY_METRICS`): `step_count`, `active_energy`, `basal_energy_burned`, `apple_exercise_time`, `apple_stand_time`, `apple_stand_hour`, `cycling_distance`, `walking_running_distance`, `flights_climbed` — metryki narastające w ciągu dnia (kcal, minuty, dystans, liczniki); dzienna wartość = suma wszystkich punktów dnia.
+- **MEDIANA** (`MEDIAN_DAILY_METRICS`): `heart_rate_variability` (wiele próbek dziennie).
+- **OSTATNI pomiar** (`LAST_DAILY_METRICS`): `resting_heart_rate`, `respiratory_rate`, `apple_sleeping_wrist_temperature` oraz metryki wagowe `weight_body_mass`, `body_fat_percentage`, `lean_body_mass`, `body_mass_index`, `height` (pojedyncze pomiary dzienne).
+
+Sen z osobnej tabeli (total/core/deep/rem/awake). Metryki spoza tych kategorii (np. prędkość chodu, saturacja) dostają ostatni punkt dnia.
+
+> **Uwaga o metrykach wagowych (BIA):** waga, body fat, lean body mass i BMI pochodzą z wag bioimpedancyjnych (np. Renpho) i zależą od ułożenia tłuszczu (pomiar stopa→stopa zaniża przy otyłości centralnej). Traktuj je jako orientacyjne i śledź trend zamiast wartości bezwzględnej — do twardego benchmarku użyj DEXA lub suwmiarki.
 
 `get_workout_hr_trace` **nie zgaduje** pliku po dacie — `Workout` ma kolumnę `raw_payload_id` ustawianą w ingestcie, więc trafienie w plik jest gwarantowane.
 

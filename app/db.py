@@ -39,11 +39,7 @@ from pathlib import Path
 _DB_DIR = Path(__file__).resolve().parent.parent  # health-auto-export-api/
 DATABASE_URL = os.environ.get(
     "DATABASE_URL",
-    (
-        "sqlite:///" + str(_DB_DIR / "health_data.db").replace("\\", "/")
-        if os.name != "nt"
-        else "sqlite:///" + str(_DB_DIR / "health_data.db").replace("\\", "/")
-    ),
+    "sqlite:///" + str(_DB_DIR / "health_data.db").replace("\\", "/"),
 )
 
 # check_same_thread=False bo FastAPI może odpalać handlery w różnych wątkach;

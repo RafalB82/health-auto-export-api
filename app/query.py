@@ -50,7 +50,6 @@ def get_workouts_deduped(session: Session, limit: int = 20) -> list[dict]:
     (najdłuższy zapis), oznaczając liczbę zduplikowanych wpisów. Baza pozostaje
     wierna - to tylko warstwa odczytu.
     """
-    import collections
     ws = session.query(models.Workout).order_by(models.Workout.start.desc()).all()
     groups = collections.defaultdict(list)
     for w in ws:
