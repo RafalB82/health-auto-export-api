@@ -47,6 +47,14 @@ class WorkoutQtyUnit(BaseModel):
         except (TypeError, ValueError):
             return v  # zostaw - Pydantic i tak zgłosi błąd walidacji float
 
+    @field_validator("units", mode="before")
+    @classmethod
+    def _coerce_units(cls, v):
+        # Health Auto Export czasem wysyła units jako liczbę zamiast stringa
+        if v is None or isinstance(v, str):
+            return v
+        return str(v)
+
 
 class WorkoutElevation(BaseModel):
     model_config = ConfigDict(extra="allow")
@@ -64,6 +72,13 @@ class WorkoutElevation(BaseModel):
             return float(str(v))
         except (TypeError, ValueError):
             return v
+
+    @field_validator("units", mode="before")
+    @classmethod
+    def _coerce_units(cls, v):
+        if v is None or isinstance(v, str):
+            return v
+        return str(v)
 
 
 class WorkoutEntry(BaseModel):
