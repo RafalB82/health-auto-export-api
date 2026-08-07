@@ -48,6 +48,11 @@ TimeoutStopSec=20
 NoNewPrivileges=true
 PrivateTmp=true
 
+# Logi do pliku (journald user bywa niepersystentny) - obserwujesz na żywo
+# przyrost danych przez: tail -f server.log
+StandardOutput=append:/home/rafal/health-auto-export-api/server.log
+StandardError=append:/home/rafal/health-auto-export-api/server.log
+
 [Install]
 WantedBy=default.target
 ```

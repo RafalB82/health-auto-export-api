@@ -12,6 +12,11 @@ Restart=always
 RestartSec=5
 TimeoutStopSec=20
 
+# Logi kierowane do pliku (journald user bywa niepersystentny) - pozwala
+# obserwować na żywo przyrost danych: tail -f server.log
+StandardOutput=append:/home/rafal/health-auto-export-api/server.log
+StandardError=append:/home/rafal/health-auto-export-api/server.log
+
 # Podstawowy sandbox
 NoNewPrivileges=true
 PrivateTmp=true
