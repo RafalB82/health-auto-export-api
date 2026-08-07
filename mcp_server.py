@@ -42,6 +42,8 @@ from app.query import (
     get_daily_activity_range,
     get_daily_series,
     get_metric_trend,
+    list_data,
+    get_data,
     WorkoutNotFoundError,
     RawPayloadUnavailableError,
 )
@@ -184,6 +186,37 @@ async def list_tools() -> list[Tool]:
                 "required": ["metric", "start_date", "end_date"],
             },
         ),
+        Tool(
+            name="list_data",
+            description=(
+                "Lista WSZYSTKICH dostępnych danych w bazie - metryki dzienne, metryki "
+                "zagregowane, daty snu, treningi. Użyj, żeby zobaczyć co można odpytać "
+                "przez get_data (nie trzeba nic definiować z góry)."
+            ),
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        Tool(
+            name="get_data",
+            description=(
+                "Generyczny odczyt dowolnej metryki/obszaru w bazie. name=metryka "
+                "(np. step_count, heart_rate, resting_heart_rate, apple_sleeping_wrist_temperature) "
+                "lub obszar (metrics, sleep, workouts). aggregation=daily|hourly|minute|raw. "
+                "Domyślnie zwraca zwarte podsumowanie (min/max/avg/latest + trend) zamiast "
+                "surowych punktów, żeby nie palkc tokenów. detail=true - surowe punkty. "
+                "Zawsze capuje do 500 punktów."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Metryka lub obszar (metrics/sleep/workouts)"},
+                    "aggregation": {"type": "string", "enum": ["daily", "hourly", "minute", "raw"], "description": "Agregacja, domyślnie daily"},
+                    "from_date": {"type": "string", "description": "Start YYYY-MM-DD (opcjonalnie)"},
+                    "to_date": {"type": "string", "description": "Koniec YYYY-MM-DD (opcjonalnie)"},
+                    "detail": {"type": "boolean", "description": "True = surowe punkty, False = summary+trend (default)"},
+                },
+                "required": ["name"],
+            },
+        ),
     ]
 
 
@@ -226,6 +259,20 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
         if name == "get_metric_trend":
             result = get_metric_trend(arguments["metric"], arguments["start_date"], arguments["end_date"])
+            return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2, default=str))]
+
+        if name == "list_data":
+            result = list_data()
+            return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2, default=str))]
+
+        if name == "get_data":
+            result = get_data(
+                arguments["name"],
+                aggregation=arguments.get("aggregation", "daily"),
+                from_date=arguments.get("from_date"),
+                to_date=arguments.get("to_date"),
+                detail=arguments.get("detail", False),
+            )
             return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2, default=str))]
 
         return [TextContent(type="text", text=f"Nieznane narzędzie: {name}")]

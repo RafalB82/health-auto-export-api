@@ -361,3 +361,161 @@ def get_metric_trend(metric: str, start_day, end_day) -> dict:
         trend.append({"date": d["date"], "value": val})
     return {"metric": metric, "trend": trend}
 
+
+# ---------------------------------------------------------------------------
+# GRUPA D - GENERIC (uniwetysalny odczyt dowolnych danych w bazie)
+# ---------------------------------------------------------------------------
+
+# Agregacja domyślna dla get_data (gdy aggregation nie podane).
+DEFAULT_AGG = "daily"
+CAP_POINTS = 500
+
+
+def list_data() -> dict:
+    """Wykrywa wszystkie obszary/metery w bazie, które można odpytac przez get_data.
+    Zwraca listy: metryki z metric_points, metryki zagregowane (agg), sen, treningi + liczba rekordów."""
+    db = SessionLocal()
+    try:
+        metrics = [r[0] for r in db.query(models.MetricPoint.metric_name).distinct().all()]
+        metrics_agg = [r[0] for r in db.query(models.MetricPointAgg.metric_name).distinct().all()]
+        workouts = [(w.id, w.name, w.start.strftime("%Y-%m-%d") if w.start else None) for w in db.query(models.Workout).order_by(models.Workout.start).all()]
+        sleep_dates = [s.date.strftime("%Y-%m-%d") for s in db.query(models.SleepSession).order_by(models.SleepSession.date).all()]
+        return {
+            "metrics_daily": metrics,
+            "metrics_agg": metrics_agg,
+            "sleep_dates": sleep_dates,
+            "workouts": [{"id": w[0], "name": w[1], "date": w[2]} for w in workouts],
+        }
+    finally:
+        db.close()
+
+
+def _coerce_date(v):
+    from datetime import datetime
+    if isinstance(v, str):
+        v = v.replace("Z", "").replace("T", " ")
+        try:
+            return datetime.strptime(v[:19], "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            return datetime.strptime(v[:10], "%Y-%m-%d")
+    return v
+
+
+def get_data(name: str, aggregation: str = DEFAULT_AGG,
+             from_date: Optional[str] = None, to_date: Optional[str] = None,
+             detail: bool = False) -> dict:
+    """Uniwersalny odczyt dowolnej metryki/obszaru w bazie.
+
+    name         - metryka (np. 'step_count', 'heart_rate', 'resting_heart_rate') lub
+                   obszar: 'metrics' (lista), 'sleep', 'workouts'.
+    aggregation  - 'daily' (dzienna wartosc, domyslna) | 'hourly' | 'minute' | 'raw'
+    from/to_date - zakres dat YYYY-MM-DD (opcjonalnie), bez = wszystko.
+    detail       - True zwraca surowe punkty, False zwraca zwarte podsumowanie/trend (domyslnie).
+
+    Zawsze capuje liczbę punktów (CAP_POINTS) i domyslnie zwraca summary (min/max/avg/liczba)
+    + trend, żeby nie palkć tokenów na surowe serie.
+    """
+    from datetime import datetime, timedelta
+    db = SessionLocal()
+    try:
+        # Obszar 'metrics' -> lista dostepnych
+        if name == "metrics":
+            return list_data()
+
+        # Obszar 'sleep'
+        if name == "sleep":
+            q = db.query(models.SleepSession)
+            if from_date or to_date:
+                d0 = _coerce_date(from_date) if from_date else datetime(1970, 1, 1)
+                d1 = _coerce_date(to_date) if to_date else datetime(2100, 1, 1)
+                d1 = d1 + timedelta(days=1)
+                q = q.filter(models.SleepSession.date >= d0, models.SleepSession.date <= d1)
+            rows = q.order_by(models.SleepSession.date).all()
+            pts = [{"date": s.date.strftime("%Y-%m-%d"),
+                    "total_hours": round(s.total_sleep, 2) if s.total_sleep else None,
+                    "core": round(s.core, 2) if s.core else None,
+                    "deep": round(s.deep, 2) if s.deep else None,
+                    "rem": round(s.rem, 2) if s.rem else None} for s in rows]
+            return {"name": "sleep", "count": len(pts), "points": pts[:CAP_POINTS],
+                    "truncated": len(pts) > CAP_POINTS}
+
+        # Obszar 'workouts' -> lista treningów
+        if name == "workouts":
+            q = db.query(models.Workout)
+            if from_date or to_date:
+                d0 = _coerce_date(from_date) if from_date else datetime(1970, 1, 1)
+                d1 = _coerce_date(to_date) if to_date else datetime(2100, 1, 1)
+                d1 = d1 + timedelta(days=1)
+                q = q.filter(models.Workout.start >= d0, models.Workout.start <= d1)
+            rows = q.order_by(models.Workout.start).all()
+            pts = [{"date": (w.start.strftime("%Y-%m-%d") if w.start else None),
+                    "name": w.name, "id": w.id,
+                    "duration_min": round((w.duration_s or 0) / 60, 1),
+                    "distance_km": w.distance_km,
+                    "kcal": round((w.active_energy_kj or 0) / 4.184, 1)} for w in rows]
+            return {"name": "workouts", "count": len(pts), "points": pts[:CAP_POINTS],
+                    "truncated": len(pts) > CAP_POINTS}
+
+        # Metryka z metric_points
+        q = db.query(models.MetricPoint).filter(models.MetricPoint.metric_name == name)
+        if from_date or to_date:
+            d0 = _coerce_date(from_date) if from_date else datetime(1970, 1, 1)
+            d1 = _coerce_date(to_date) if to_date else datetime(2100, 1, 1)
+            d1 = d1 + timedelta(days=1)
+            q = q.filter(models.MetricPoint.date >= d0, models.MetricPoint.date <= d1)
+        rows = q.order_by(models.MetricPoint.date).all()
+        if rows:
+            vals = [(r.date, r.qty) for r in rows if r.qty is not None]
+        else:
+            # spróbuj w metric_points_agg
+            qa = db.query(models.MetricPointAgg).filter(models.MetricPointAgg.metric_name == name)
+            if from_date or to_date:
+                d0 = _coerce_date(from_date) if from_date else datetime(1970, 1, 1)
+                d1 = _coerce_date(to_date) if to_date else datetime(2100, 1, 1)
+                d1 = d1 + timedelta(days=1)
+                qa = qa.filter(models.MetricPointAgg.date >= d0, models.MetricPointAgg.date <= d1)
+            arow = qa.order_by(models.MetricPointAgg.date).all()
+            vals = [(r.date, r.avg if r.avg is not None else r.max) for r in arow if r.avg is not None or r.max is not None]
+
+        if not vals:
+            return {"name": name, "error": "Brak danych w tym zakresie lub metryka nie istnieje", "count": 0}
+
+        numbers = [v for _, v in vals if v is not None]
+        summary = {
+            "count": len(numbers),
+            "min": round(min(numbers), 2) if numbers else None,
+            "max": round(max(numbers), 2) if numbers else None,
+            "avg": round(sum(numbers) / len(numbers), 2) if numbers else None,
+            "latest": round(numbers[-1], 2) if numbers else None,
+            "units": (rows[0].units if rows else None),
+        }
+
+        # Agregacja treści
+        if aggregation == "minute":
+            pts = [{"date": d.strftime("%Y-%m-%d %H:%M"), "value": round(v, 2)} for d, v in vals]
+        elif aggregation == "hourly":
+            by = collections.defaultdict(list)
+            for d, v in vals:
+                by[d.strftime("%Y-%m-%d %H:00")].append(v)
+            pts = [{"bucket": k, "value": round(sum(vl) / len(vl), 2), "samples": len(vl)}
+                   for k, vl in sorted(by.items())]
+        elif aggregation == "raw":
+            pts = [{"date": d.strftime("%Y-%m-%d %H:%M"), "value": round(v, 2)} for d, v in vals]
+        else:  # daily
+            by_day = collections.defaultdict(list)
+            for d, v in vals:
+                by_day[d.strftime("%Y-%m-%d")].append(v)
+            pts = [{"date": k, "value": _agg_daily(vl, name)} for k, vl in sorted(by_day.items())]
+
+        truncated = len(pts) > CAP_POINTS
+        pts = pts[:CAP_POINTS]
+
+        if detail or len(pts) <= 60:
+            return {"name": name, "aggregation": aggregation, "summary": summary, "points": pts, "truncated": truncated}
+        # domyślnie: podsumowanie + docinki trendu (żeby nie palic tokenów)
+        return {"name": name, "aggregation": aggregation, "summary": summary,
+                "trend_sample": pts, "truncated": truncated}
+    finally:
+        db.close()
+
+
