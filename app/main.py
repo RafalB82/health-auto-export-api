@@ -16,6 +16,7 @@ client_max_body_size (np. 200m), inaczej nginx utnie request przed FastAPI.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -24,6 +25,7 @@ from typing import Optional
 
 from fastapi import FastAPI, Header, HTTPException, Request, Depends
 from pydantic import ValidationError
+from sqlalchemy import delete as sa_delete
 from sqlalchemy.orm import Session
 
 from app.db import init_db, get_db, SessionLocal
@@ -38,12 +40,49 @@ logger = logging.getLogger("health-api")
 # zmienną środowiskową przed uruchomieniem: export HEALTH_API_KEY="..."
 API_KEY = os.environ.get("HEALTH_API_KEY", "change-me")
 
+# Co ile dni czyścić całą tabelę raw_payloads (surowe JSON-y każdego requestu).
+# To dominujące źródło przyrostu bazy - trzymamy je tylko jako siatkę bezpieczeństwa
+# do debugowania; po wystartowaniu serwera i co CLEANUP_INTERVAL_DAYS kasujemy całość.
+CLEANUP_INTERVAL_DAYS = int(os.environ.get("RAW_PAYLOAD_CLEANUP_DAYS", "7"))
+
+
+def cleanup_raw_payloads() -> int:
+    """Usuwa CAŁĄ zawartość raw_payloads. Zwraca liczbę usuniętych wierszy."""
+    with SessionLocal() as db:
+        deleted = db.execute(sa_delete(RawPayload)).rowcount
+        db.commit()
+    return deleted
+
+
+async def raw_payload_cleanup_loop():
+    """Pętla w tle: czyści raw_payloads przy starcie, potem co CLEANUP_INTERVAL_DAYS."""
+    interval_s = CLEANUP_INTERVAL_DAYS * 86400
+    while True:
+        try:
+            deleted = await asyncio.to_thread(cleanup_raw_payloads)
+            logger.info(
+                "Cleanup raw_payloads: usunięto %d wierszy (co %d dni)",
+                deleted, CLEANUP_INTERVAL_DAYS,
+            )
+        except Exception:
+            logger.exception("Cleanup raw_payloads nie powiódł się")
+        await asyncio.sleep(interval_s)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
     logger.info("DB zainicjalizowana (SQLite: health_data.db)")
-    yield
+    cleanup_task = asyncio.create_task(raw_payload_cleanup_loop())
+    logger.info("Cleanup raw_payloads: co %d dni, pierwsze uruchomienie przy starcie", CLEANUP_INTERVAL_DAYS)
+    try:
+        yield
+    finally:
+        cleanup_task.cancel()
+        try:
+            await cleanup_task
+        except asyncio.CancelledError:
+            pass
 
 
 app = FastAPI(title="Health Auto Export Receiver", lifespan=lifespan)
