@@ -36,6 +36,7 @@ from app.query import (
     get_workout_summary,
     get_workout_hr_minutely,
     get_workout_hr_trace,
+    get_workouts_deduped,
     WorkoutNotFoundError,
     RawPayloadUnavailableError,
 )
@@ -112,18 +113,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     try:
         if name == "list_recent_workouts":
             limit = arguments.get("limit", 10)
-            rows = db.query(Workout).order_by(Workout.start.desc()).limit(limit).all()
-            result = [
-                {
-                    "id": w.id,
-                    "name": w.name,
-                    "start": w.start.isoformat() if w.start else None,
-                    "distance_km": w.distance_km,
-                    "avg_heart_rate_bpm": w.avg_heart_rate_bpm,
-                    "max_heart_rate_bpm": w.max_heart_rate_bpm,
-                }
-                for w in rows
-            ]
+            result = get_workouts_deduped(db, limit=limit)
             return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2))]
 
         if name == "get_workout_summary":

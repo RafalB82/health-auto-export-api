@@ -39,6 +39,45 @@ class RawPayloadUnavailableError(Exception):
     pass
 
 
+def get_workouts_deduped(session: Session, limit: int = 20) -> list[dict]:
+    """Lista ostatnich treningów Z deduplikacją po (data, nazwa, czas startu).
+
+    Health Auto Export może wysyłać ten sam fizyczny wysiłek 2x (zegarek + Hevy /
+    iPhone), z różnym UUID i lekko różnym duration/source. Funkcja grupuje wpisy
+    po (data, nazwa, czas startu do minuty) i zwraca jednego reprezentanta
+    (najdłuższy zapis), oznaczając liczbę zduplikowanych wpisów. Baza pozostaje
+    wierna - to tylko warstwa odczytu.
+    """
+    import collections
+    ws = session.query(models.Workout).order_by(models.Workout.start.desc()).all()
+    groups = collections.defaultdict(list)
+    for w in ws:
+        key = (w.start.strftime('%Y-%m-%d %H:%M'), w.name) if w.start else (str(w.id), w.name)
+        groups[key].append(w)
+
+    result = []
+    for key, items in groups.items():
+        rep = max(items, key=lambda w: (w.duration_s or 0))
+        result.append({
+            "id": rep.id,
+            "name": rep.name,
+            "start": rep.start.isoformat() if rep.start else None,
+            "end": rep.end.isoformat() if rep.end else None,
+            "duration_s": rep.duration_s,
+            "duration_min": round((rep.duration_s or 0) / 60, 1),
+            "distance_km": rep.distance_km,
+            "avg_heart_rate_bpm": round(rep.avg_heart_rate_bpm, 1) if rep.avg_heart_rate_bpm else None,
+            "max_heart_rate_bpm": rep.max_heart_rate_bpm,
+            "active_energy_kj": round(rep.active_energy_kj, 1) if rep.active_energy_kj else None,
+            "step_count": rep.step_count,
+            "deduped_copies": len(items),
+        })
+
+    result.sort(key=lambda r: (r["start"] or ""), reverse=True)
+    return result[:limit]
+
+
+
 def get_workout_summary(session: Session, workout_id: str) -> dict:
     """Zagregowane dane treningu z SQLite - szybkie, do typowych pytań
     ('jaki był średni/max HR', 'ile km', itd.). Preferowana ścieżka dla MCP."""
