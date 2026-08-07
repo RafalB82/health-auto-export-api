@@ -37,6 +37,7 @@ from app.query import (
     get_workout_hr_minutely,
     get_workout_hr_trace,
     get_workouts_deduped,
+    get_workout_series,
     WorkoutNotFoundError,
     RawPayloadUnavailableError,
 )
@@ -89,6 +90,20 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
+            name="get_workout_series",
+            description=(
+                "Serie czasowe treningu: energia (kJ/kcal na minutę) + kroki na minutę + "
+                "tętno minutowe. Pełny profil wysiłku treningu - do wykresów."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "workout_id": {"type": "string", "description": "UUID treningu"},
+                },
+                "required": ["workout_id"],
+            },
+        ),
+        Tool(
             name="get_workout_hr_trace",
             description=(
                 "Pełny szereg czasowy tętna sekunda-po-sekundzie, wprost z surowego "
@@ -122,6 +137,10 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
         if name == "get_workout_hr_minutely":
             result = get_workout_hr_minutely(db, arguments["workout_id"])
+            return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2))]
+
+        if name == "get_workout_series":
+            result = get_workout_series(db, arguments["workout_id"])
             return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2))]
 
         if name == "get_workout_hr_trace":

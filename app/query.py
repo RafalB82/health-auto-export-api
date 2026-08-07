@@ -69,7 +69,8 @@ def get_workouts_deduped(session: Session, limit: int = 20) -> list[dict]:
             "avg_heart_rate_bpm": round(rep.avg_heart_rate_bpm, 1) if rep.avg_heart_rate_bpm else None,
             "max_heart_rate_bpm": rep.max_heart_rate_bpm,
             "active_energy_kj": round(rep.active_energy_kj, 1) if rep.active_energy_kj else None,
-            "step_count": rep.step_count,
+            "active_energy_kcal": round(rep.active_energy_kj / 4.184, 1) if rep.active_energy_kj else None,
+            "total_steps": rep.step_count,
             "deduped_copies": len(items),
         })
 
@@ -85,17 +86,27 @@ def get_workout_summary(session: Session, workout_id: str) -> dict:
     if w is None:
         raise WorkoutNotFoundError(f"Brak treningu o id={workout_id}")
 
+    # kroki/energia z nagłówka (suma serii zapisana w ingest)
+    total_steps = w.step_count
+    energy_kj = w.active_energy_kj
+    kcal = energy_kj / 4.184 if energy_kj is not None else None
+
     return {
         "id": w.id,
         "name": w.name,
         "start": w.start.isoformat() if w.start else None,
         "end": w.end.isoformat() if w.end else None,
         "duration_s": w.duration_s,
+        "duration_min": round((w.duration_s or 0) / 60, 1),
         "distance_km": w.distance_km,
         "avg_speed_kmh": w.avg_speed_kmh,
         "max_speed_kmh": w.max_speed_kmh,
         "avg_heart_rate_bpm": w.avg_heart_rate_bpm,
         "max_heart_rate_bpm": w.max_heart_rate_bpm,
+        "total_steps": total_steps,
+        "active_energy_kj": energy_kj,
+        "active_energy_kcal": round(kcal, 1) if kcal is not None else None,
+        "total_energy_kj": w.total_energy_kj,
         "elevation_ascent_m": w.elevation_ascent_m,
         "elevation_descent_m": w.elevation_descent_m,
     }
@@ -125,6 +136,33 @@ def get_workout_hr_minutely(session: Session, workout_id: str) -> list[dict]:
         }
         for r in rows
     ]
+
+
+def get_workout_series(session: Session, workout_id: str) -> dict:
+    """Serie czasowe treningu: energia (kJ/min) + kroki (steps/min) + HR minutowy.
+
+    Zwraca pełny profil minutowy treningu - do wykresów wysiłku. Zamiast trzech
+    osobnych odczytów, jedno zapytanie zbiera energie/kroki/HR z osobnych tabel.
+    """
+    if session.query(models.Workout).filter_by(id=workout_id).one_or_none() is None:
+        raise WorkoutNotFoundError(f"Brak treningu o id={workout_id}")
+
+    energy = session.query(models.WorkoutEnergy).filter_by(workout_id=workout_id).order_by(models.WorkoutEnergy.date).all()
+    steps = session.query(models.WorkoutStep).filter_by(workout_id=workout_id).order_by(models.WorkoutStep.date).all()
+    hr = session.query(models.WorkoutHeartRate).filter_by(workout_id=workout_id, kind="active").order_by(models.WorkoutHeartRate.date).all()
+
+    energy_min = [{"minute": e.date.isoformat(), "kJ": round(e.qty, 1), "kcal": round(e.qty / 4.184, 1)} for e in energy]
+    steps_min = [{"minute": s.date.isoformat(), "steps": int(s.qty) if s.qty else 0} for s in steps]
+    hr_min = [{"minute": r.date.isoformat(), "avg_bpm": r.qty, "min_bpm": r.min_qty, "max_bpm": r.max_qty, "samples": r.sample_count} for r in hr]
+
+    return {
+        "workout_id": workout_id,
+        "total_kcal": round(sum(e.qty for e in energy) / 4.184, 1) if energy else None,
+        "total_steps": sum(s.qty for s in steps) if steps else None,
+        "energy_minutely": energy_min,
+        "steps_minutely": steps_min,
+        "hr_minutely": hr_min,
+    }
 
 
 def get_workout_hr_trace(session: Session, workout_id: str) -> list[dict]:
