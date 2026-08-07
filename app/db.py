@@ -29,7 +29,22 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 
-DATABASE_URL = "sqlite:///./health_data.db"
+import os
+from pathlib import Path
+
+# Baza SQLite. Domyślnie bezwzględna ścieżka względem katalogu projektu
+# (parent katalogu zawierającego ten plik), żeby webhook i MCP server zawsze
+# wskazywały na TEN SAM plik, niezależnie od katalogu roboczego procesu
+# (OpenClaw startuje MCP z innego cwd). Można nadpisać przez DATABASE_URL.
+_DB_DIR = Path(__file__).resolve().parent.parent  # health-auto-export-api/
+DATABASE_URL = os.environ.get(
+    "DATABASE_URL",
+    (
+        "sqlite:///" + str(_DB_DIR / "health_data.db").replace("\\", "/")
+        if os.name != "nt"
+        else "sqlite:///" + str(_DB_DIR / "health_data.db").replace("\\", "/")
+    ),
+)
 
 # check_same_thread=False bo FastAPI może odpalać handlery w różnych wątkach;
 # przy SQLite pod jednym procesem to bezpieczne dopóki nie robimy współbieżnych write'ów
