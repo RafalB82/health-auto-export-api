@@ -19,9 +19,11 @@ from __future__ import annotations
 import json
 import logging
 import os
+import base64
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Optional
+from pathlib import Path
 
 from fastapi import FastAPI, Header, HTTPException, Request, Depends
 from pydantic import ValidationError
@@ -38,7 +40,35 @@ logger = logging.getLogger("health-api")
 
 # Klucz API do walidacji nagłówka X-API-Key. Ustaw realną wartość jako
 # zmienną środowiskową przed uruchomieniem: export HEALTH_API_KEY="..."
-API_KEY = os.environ.get("HEALTH_API_KEY", "change-me")
+# lub w pliku .env (HEALTH_API_KEY=...), patrz _load_api_key() poniżej.
+def _load_api_key() -> str:
+    """Klucz API: env HEALTH_API_KEY > plik .env (HEALTH_API_KEY=...) > domyślny.
+
+    Wartość w .env może być podana jako base64 (zakodowany sekret), żeby ominąć
+    problemy z przekazywaniem sekretów przez shell/procesy."""
+    key = os.environ.get("HEALTH_API_KEY")
+    if key:
+        return key
+    env_file = Path(__file__).resolve().parent.parent / ".env"
+    if env_file.exists():
+        for line in env_file.read_text().splitlines():
+            line = line.strip()
+            if line.startswith("HEALTH_API_KEY="):
+                val = line.split("=", 1)[1].strip().strip('"').strip("'")
+                # Jeśli wygląda na base64 (security: chroń przed przypadkowym b64 nagiego sekretu)
+                if val and val != "change-me" and len(val) >= 20 and all(
+                    c in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/="
+                    for c in val
+                ):
+                    try:
+                        val = base64.b64decode(val).decode("utf-8")
+                    except Exception:
+                        pass
+                return val
+    return "change-me"
+
+
+API_KEY = _load_api_key()
 
 
 @asynccontextmanager

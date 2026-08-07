@@ -6,3 +6,5 @@ venv/
 raw_payloads/
 venv-mcp/
 *.log
+
+.env
