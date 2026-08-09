@@ -58,12 +58,16 @@ async def list_tools() -> list[Tool]:
             name="list_recent_workouts",
             description=(
                 "Lista ostatnich treningów (id, nazwa, data, dystans) - użyj tego "
-                "najpierw, żeby znaleźć workout_id do pozostałych narzędzi."
+                "najpierw, żeby znaleźć workout_id do pozostałych narzędzi. "
+                "start_date/end_date (opcjonalne, YYYY-MM-DD) zawężają do zakresu "
+                "dat startu; end_date włącznie."
             ),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "limit": {"type": "integer", "description": "Ile ostatnich treningów zwrócić (domyślnie 10)"},
+                    "start_date": {"type": "string", "description": "Start YYYY-MM-DD (opcjonalnie)"},
+                    "end_date": {"type": "string", "description": "Koniec YYYY-MM-DD włącznie (opcjonalnie)"},
                 },
             },
         ),
@@ -226,7 +230,12 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     try:
         if name == "list_recent_workouts":
             limit = arguments.get("limit", 10)
-            result = get_workouts_deduped(db, limit=limit)
+            result = get_workouts_deduped(
+                db,
+                limit=limit,
+                start_date=arguments.get("start_date"),
+                end_date=arguments.get("end_date"),
+            )
             return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2))]
 
         if name == "get_workout_summary":
