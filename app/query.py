@@ -41,7 +41,9 @@ class RawPayloadUnavailableError(Exception):
     pass
 
 
-def get_workouts_deduped(session: Session, limit: int = 20) -> list[dict]:
+def get_workouts_deduped(session: Session, limit: int = 20,
+                         start_date: Optional[str] = None,
+                         end_date: Optional[str] = None) -> list[dict]:
     """Lista ostatnich treningów Z deduplikacją po (data, nazwa, czas startu).
 
     Health Auto Export może wysyłać ten sam fizyczny wysiłek 2x (zegarek + Hevy /
@@ -49,8 +51,22 @@ def get_workouts_deduped(session: Session, limit: int = 20) -> list[dict]:
     po (data, nazwa, czas startu do minuty) i zwraca jednego reprezentanta
     (najdłuższy zapis), oznaczając liczbę zduplikowanych wpisów. Baza pozostaje
     wierna - to tylko warstwa odczytu.
+
+    start_date/end_date (YYYY-MM-DD, opcjonalne) ograniczają zakres po dacie
+    startu treningu ZANIM deduplikacja - dzięki temu nie ładujemy całej bazy do
+    pamięci dla zapytań zakresowych. end_date jest włącznie (cały dzień).
     """
-    ws = session.query(models.Workout).order_by(models.Workout.start.desc()).all()
+    from datetime import datetime, timedelta
+
+    q = session.query(models.Workout)
+    if start_date:
+        start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+        q = q.filter(models.Workout.start >= start_dt)
+    if end_date:
+        # end_date włącznie -> < koniec dnia następnego
+        end_dt = datetime.strptime(end_date, "%Y-%m-%d") + timedelta(days=1)
+        q = q.filter(models.Workout.start < end_dt)
+    ws = q.order_by(models.Workout.start.desc()).all()
     groups = collections.defaultdict(list)
     for w in ws:
         key = (w.start.strftime('%Y-%m-%d %H:%M'), w.name) if w.start else (str(w.id), w.name)
